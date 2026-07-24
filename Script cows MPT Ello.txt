@@ -1,0 +1,643 @@
+# SCRIPT SOUNDWEL
+# adapted by Elodie Briefer from Ben Charlton/Markus Boeckle, David Reby/Frederic Sebe, Maxime Garcia, Anne-laure Maigrot, Monica Padilla
+#---------------------------------------------------------------------------------------------------------------
+
+## Choose directory, output and file extension
+
+form Choose directoy 
+
+# Input directoy
+sentence Input_directory C:\Users\evaci\Documents\Test\
+
+# Output file
+sentence pf_spreadsheet C:\Users\evaci\Documents\Test\out.txt
+boolean New_spreadsheet 1
+
+optionmenu Input_file_extension 1
+option .wav
+option .aif
+option .aiff
+option .au
+option .nsp
+option none
+
+comment Spectrogram settings
+positive View_range_max 5000
+positive Window_length 0.05
+positive Dynamic_range 60
+
+endform
+
+## Choose parameters -> enter numbers in script
+
+##PITCH
+
+# PREDEFINE Pitch analysis parameters, including spectro parameters
+
+# cow LFC (low, closed-mouth cow call)
+spectro_view_range_max_LFC = 4000
+spectro_window_length_LFC = 0.05
+time_step_LFC = 0.01
+min_F0_LFC = 60
+max_F0_LFC = 120
+max_Nb_Candidates_LFC = 15
+silence_Threshold_LFC = 0.15
+voicing_Threshold_LFC = 0.15
+octave_Cost_LFC = 0.1
+octave_jump_Cost_LFC = 0.7
+voiced_Unvoiced_Cost_LFC = 0.14
+
+# cow HFC (high,open-mouth cow call)
+spectro_view_range_max_HFC = 3500
+spectro_window_length_HFC = 0.05
+time_step_HFC = 0.01
+min_F0_HFC = 60
+max_F0_HFC = 300
+max_Nb_Candidates_HFC = 15
+silence_Threshold_HFC = 0.15
+voicing_Threshold_HFC = 0.15
+octave_Cost_HFC = 0.1
+octave_jump_Cost_HFC = 0.7
+voiced_Unvoiced_Cost_HFC = 0.14
+
+
+##FORMANTS
+
+# Formant analysis parameters ONLY IF FORMANTSb procedure used
+
+# cow LFC (low, closed-mouth cow call)
+time_step_f_LFC = 0.01
+max_number_of_formants_LFC = 9
+maximum_formant_LFC = 4000
+window_length_LFC = 0.01
+pre_emphasis_from_LFC = 50
+
+# cow HFC (high, open-mouth cow call)
+time_step_f_HFC = 0.01
+max_number_of_formants_HFC = 9
+maximum_formant_HFC = 3500
+window_length_HFC = 0.01
+pre_emphasis_from_HFC = 50
+
+
+
+# Defines homedirectory and files which will be analyzed and were to save the outputfile
+homepath$ = environment$("HOMEPATH")
+
+if homepath$ = ""
+	platform$ = "unix"
+else
+	platform$ = "win"
+endif
+
+in_slash_input$ = left$(input_directory$,1)
+in_colon_input$ = mid$(input_directory$,2,1)
+out_slash_input$ = right$(input_directory$,1)
+
+
+if platform$ = "win"
+	output_directory$ = "C:\temp\"
+	in_slash_output$ = left$(output_directory$,1)
+	in_colon_output$ = mid$(output_directory$,2,1)
+	out_slash_output$ = right$(output_directory$,1)
+
+	if in_colon_input$ <> ":" and in_slash_input$ <> "\"
+		exit Paths must start with backslash \ or drive letter
+	elsif in_colon_output$ <> ":" and in_slash_output$ <> "\"
+		exit Paths must start with backslash \ or drive letter
+	elsif out_slash_input$ <> "\"
+		exit Paths must end with a backslash \
+	elsif out_slash_output$ <> "\"
+		exit Paths must end with a backslash \
+	endif
+	
+else
+	output_directory$ = "~/temp/"
+	in_slash_output$ = left$(output_directory$,1)
+	in_colon_output$ = mid$(output_directory$,2,1)
+	out_slash_output$ = right$(output_directory$,1)
+
+	if in_slash_input$ <> "/" and in_slash_input$ <> "~"
+		exit Paths must start with slash / or tilde ~
+	elsif in_slash_output$ <> "/" and in_slash_output$ <> "~"
+		exit Paths must start with slash / or tilde ~
+	elsif out_slash_input$ <> "/"
+		exit Paths must end with a slash /
+	elsif out_slash_output$ <> "/"
+		exit Paths must end with a slash /
+	endif
+	
+endif
+
+# Checks if there is a outputfile with the name already existing and then either overrites or creates new file with the headers listed in filappend
+if new_spreadsheet = 1
+	if fileReadable (pf_spreadsheet$)
+		pause This file already exists! Do you want to overwrite it?
+		filedelete 'pf_spreadsheet$'
+	endif
+	fileappend "'pf_spreadsheet$'" file,Call type,Mean F0,Max F0, Min F0, Range F0,
+	fileappend "'pf_spreadsheet$'" Q25%,Q50%,Q75%,Fpeak,
+	fileappend "'pf_spreadsheet$'" sound duration,AM var,AM rate,AM extent,harmonicity, 
+	fileappend "'pf_spreadsheet$'" F1 mean,F2 mean,F3 mean,F4 mean,F5 mean,F6 mean,F7 mean,F8 mean,formant dispersal,vocal tract length,mean wiener entropy,Comment,
+
+endif
+
+if input_file_extension$ = "none"
+	input_file_extension$ =""
+endif
+
+# Creates strings with the names of the files within the directory of the sound files
+Create Strings as file list... list 'input_directory$'*'input_file_extension$'
+string_list = selected("Strings")
+
+nfiles = Get number of strings
+for current_file from 1 to nfiles
+	call TOTAL
+	select all
+	minus string_list
+	Remove
+
+endfor
+
+## GENERAL
+procedure TOTAL
+
+# Checkbox type of call
+
+	select string_list
+	sound$ = Get string... current_file
+	Read from file... 'input_directory$''sound$'
+	current_sound = selected ("Sound")
+	name$ = selected$ ("Sound")
+	
+	Edit
+
+	editor Sound 'name$'
+		rmax = 'View_range_max' 
+		winlength = 'Window_length'
+		dynrange = 'Dynamic_range'
+   		Spectrogram settings... 0 rmax winlength dynrange 
+	endeditor
+
+		beginPause ("What kind of call is it?")
+			comment ("Pitch analysis parameters will be adjusted to the predefined")
+			comment ("1=LFs (low, closed-mouth cow call) 2= HFC (high,open-mouth cow call)")
+			
+		pitchanalysisTypeAgeClass = endPause ("LFC", "HFC", 1)
+
+		if pitchanalysisTypeAgeClass = 1
+			call_type$ = "LFC"
+			sview_range_max = spectro_view_range_max_LFC
+			swindow_length = spectro_window_length_LFC 
+			tiste = 'time_step_LFC'
+			minF0 = 'min_F0_LFC'
+			maxF0 = 'max_F0_LFC'
+			maxCandF0 = 'max_Nb_Candidates_LFC'
+			silThreF0 = 'silence_Threshold_LFC'
+			voicThreF0 = 'voicing_Threshold_LFC'
+			octCostF0 = 'octave_Cost_LFC'
+			octJumpCostF0 = 'octave_jump_Cost_LFC'
+			voicUnvoicCostF0 = 'voiced_Unvoiced_Cost_LFC'
+			time_step_f = 'time_step_f_LFC'
+			max_number_of_formants = 'max_number_of_formants_LFC'
+			maximum_formant = 'maximum_formant_LFC'
+			window_length = 'window_length_LFC'
+			pre_emphasis = 'pre_emphasis_from_LFC'
+
+			call PITCH
+			call ENERGY
+			call AMPLITUDE
+			call HARMONICITY
+			call FORMANTSb
+			call WIENERENTROPY
+			call COMMENTS
+			
+		endif  
+
+		if pitchanalysisTypeAgeClass = 2
+			call_type$ = "HFC"
+			sview_range_max = spectro_view_range_max_HFC
+			swindow_length = spectro_window_length_HFC
+			tiste = 'time_step_HFC'
+			minF0 = 'min_F0_HFC'
+			maxF0 = 'max_F0_HFC'
+			maxCandF0 = 'max_Nb_Candidates_HFC'
+			silThreF0 = 'silence_Threshold_HFC'
+			voicThreF0 = 'voicing_Threshold_HFC'
+			octCostF0 = 'octave_Cost_HFC'
+			octJumpCostF0 = 'octave_jump_Cost_HFC'
+			voicUnvoicCostF0 = 'voiced_Unvoiced_Cost_HFC'
+			time_step_f = 'time_step_f_HFC'
+			max_number_of_formants = 'max_number_of_formants_HFC'
+			maximum_formant = 'maximum_formant_HFC'
+			window_length = 'window_length_HFC'
+			pre_emphasis = 'pre_emphasis_from_HFC'
+
+			call PITCH
+			call ENERGY
+			call AMPLITUDE
+			call HARMONICITY
+			call FORMANTSb
+			call WIENERENTROPY
+			call COMMENTS
+		endif 
+		
+		
+endproc
+
+
+procedure PITCH
+# adapated from David Reby, Frederique Sebe
+	
+	select current_sound
+	sound_duration = Get total duration
+	Edit
+
+	editor Sound 'name$'
+   		Spectrogram settings... 0 sview_range_max swindow_length 60 
+	endeditor
+
+	To Pitch (cc)... tiste minF0 maxCandF0 no silThreF0 voicThreF0 octCostF0 octJumpCostF0 voicUnvoicCostF0 maxF0
+	Rename... Pitch
+	Edit
+	pause Inspect the sound
+	Smooth... 10
+	
+	#pause Inspect the sound
+	Rename... Smoothed
+	Interpolate
+	Rename... Interpolated
+	
+	f0_mean = Get mean... 0 0 Hertz
+	f0_max = Get maximum... 0 0 Hertz Parabolic
+	f0_min = Get minimum... 0 0 Hertz Parabolic
+	f0_range = f0_max - f0_min
+	
+	Down to PitchTier
+	select Pitch Interpolated
+	Down to PitchTier
+	Down to TableOfReal... Hertz
+	Rename... voiced
+	select TableOfReal voiced
+	nrow = Get number of rows
+	Remove
+
+	print ANALYSIS SUMMARY'newline$'
+	print File name: 'sound$''newline$'
+	print Call type = 'call_type$''newline$'
+	printline
+	print Mean F0 = 'f0_mean:3' Hz'newline$'
+	print Max F0 = 'f0_max:3' Hz'newline$'
+	print Min F0 = 'f0_min:3' Hz'newline$'
+	print Range F0 = 'f0_range:3'Hz'newline$'
+		
+	fileappend "'pf_spreadsheet$'" 'newline$''sound$','call_type$','f0_mean:3','f0_max:3','f0_min:3','f0_range:3',
+	#File name,Call type,Mean F0,Max F0,Min F0,Range F0,
+endproc	
+
+	
+procedure ENERGY
+# adapated from David Reby, Frederique Sebe
+
+	select current_sound
+	To Spectrum... yes
+	Rename...  spect_son
+	Copy...  spect_son
+	q50 = Get centre of gravity... 2
+	Copy...  spect_son
+	###Q25 et Q75 sont calculle a partir du spectre filtre pas exactement Q25 puisque c filtre
+	###pas de probleme pour Q50 qui est le centre de gravite
+	Filter (pass Hann band)... 0 'q50' 100
+	Rename...  pass_han_pect_son
+	q25 = Get centre of gravity... 2
+	select Spectrum spect_son
+	Filter (stop Hann band)... 0 'q50' 100
+	Rename...  stop_han_pect_son
+	q75 = Get centre of gravity... 2
+	
+	select Spectrum spect_son
+	Cepstral smoothing... 100
+	Rename...  spect_son_smooth
+	To SpectrumTier (peaks)
+	Down to Table
+	Rename...  table_son
+	fpeak = Get value... 1 freq(Hz)
+	
+	print Q25% = 'q25:3' Hz'newline$'
+	print Q50% = 'q50:3' Hz'newline$'
+	print Q75% = 'q75:3' Hz'newline$'
+	print Fpeak = 'fpeak:3' Hz'newline$'
+	
+	fileappend "'pf_spreadsheet$'" 'q25:3','q50:3','q75:3','fpeak:3',
+	#Q25%,Q50%,Q75%,Fpeak,
+
+endproc
+
+procedure AMPLITUDE
+# adapated from David Reby, Ben Charlton, Frederique Sebe
+		
+	select current_sound
+	sound_duration = Get total duration
+	To Intensity... minF0 tiste yes
+	Rename...  int_son
+		tmaxAMP = Get time of maximum... 0 0 Parabolic
+		tmaxAMP2 = (tmaxAMP / sound_duration)*100
+	
+	Down to IntensityTier
+
+	#clearinfo
+	nframe = Get number of points
+	infl_asc = 0
+	infl_desc = 0
+	rowin = 0
+	variationtot = 0
+	variation = 0
+
+	Create TableOfReal... formul 1 2
+	Set row label (label)... "" rowin
+	Set column label (index)... 1 frame
+	Set column label (index)... 2 in
+	
+	select Intensity int_son
+	for current_frame from 1 to nframe-1
+		intensity_frame = Get value in frame... current_frame 
+		intensity_frame_before = Get value in frame... current_frame-1 
+		intensity_frame_after = Get value in frame... current_frame+1 
+
+		if intensity_frame <> undefined and intensity_frame_before <> undefined and intensity_frame_after <> undefined
+			if intensity_frame_after >  intensity_frame and intensity_frame <= intensity_frame_before
+				infl_asc +=1
+			elsif intensity_frame_after < intensity_frame and intensity_frame >= intensity_frame_before
+				infl_desc +=1
+			endif
+			variationtot += abs(intensity_frame_after - intensity_frame)
+			variation += (intensity_frame_after - intensity_frame)
+			rowin += 1
+			select TableOfReal formul
+			Insert row (index)... rowin
+			Set value... rowin 2 rowin 
+			Set value... rowin 2 intensity_frame
+			select Intensity int_son
+
+		endif	
+	endfor
+	
+	variation_abs = abs(variation)
+	sum_infl = (infl_asc + infl_desc)
+	inflex = sum_infl/sound_duration
+	sumvar = variation_abs/sound_duration
+	#cumulative variation in the In contour divided by call duration
+	#mean variation per second (AM var):
+	amvar = variationtot/sound_duration
+	#number of complete cycles of In modulation per second (AM rate):
+	amrate = ((sum_infl)/2)/sound_duration
+	#mean peak-to-peak variation of each In modulation per second (AM extent):
+	amextent = (variationtot/((sum_infl)/2))
+	
+	print sound duration = 'sound_duration:3' sec.'newline$'
+	print AM var  = 'amvar:3' dB'newline$'
+	print AM rate = 'amrate:3' cps'newline$'
+	print AM extent = 'amextent:3' dB'newline$'
+	fileappend "'pf_spreadsheet$'" 'sound_duration:3','amvar:3','amrate:3','amextent:3',
+	#sound duration,AM var,AM rate,AM extent,
+
+endproc
+
+procedure HARMONICITY
+
+	select current_sound
+	To Harmonicity (cc)... tiste minF0 silThreF0 1
+	Rename... harm
+		meanHNR = Get mean... 0 0
+	
+	print hamonicity = 'meanHNR:2' %'newline$'
+	fileappend "'pf_spreadsheet$'" 'meanHNR:2',
+	#mean Harmonic to noise ratio,
+endproc
+
+procedure FORMANTS
+# adapated from Maxime Garcia (VTL)
+	
+	select current_sound
+	Filter (stop Hann band)... 0 50 100
+	To Spectrum... yes
+	Rename...  spect_son
+	select Spectrum spect_son
+	Cepstral smoothing... 600
+	Rename...  spect_sonCs
+	To Formant (peaks)... 10
+	Down to FormantTier
+	Down to TableOfReal... yes no
+	f1mean = Get value... 1 2
+	f2mean = Get value... 1 3
+	f3mean = Get value... 1 4
+	f4mean = Get value... 1 5
+	f5mean = Get value... 1 6
+	f6mean = Get value... 1 7
+	f7mean = Get value... 1 8 
+	f8mean = Get value... 1 9
+	df = ((f2mean-f1mean)+(f3mean-f2mean)+(f4mean-f3mean)+(f5mean-f4mean)+(f6mean-f5mean)+(f7mean-f6mean)+(f8mean-f7mean))/7
+	vocaltractlength = 35000/(2*df)
+	
+	select Spectrum spect_son
+	LPC smoothing... 30 50
+	To SpectrumTier (peaks)
+	Down to Table
+	lpc1 = Get value... 1 freq(Hz)
+	lpc2 = Get value... 2 freq(Hz)
+	lpc3 = Get value... 3 freq(Hz)
+	lpc4 = Get value... 4 freq(Hz)
+	lpc5 = Get value... 5 freq(Hz)
+	lpc6 = Get value... 6 freq(Hz)
+	lpc7 = Get value... 7 freq(Hz)
+	lpc8 = Get value... 8 freq(Hz)
+	
+	print F1 mean = 'f1mean:3' Hz'newline$'
+	print F2 mean = 'f2mean:3' Hz'newline$'
+	print F3 mean = 'f3mean:3' Hz'newline$'
+	print F4 mean = 'f4mean:3' Hz'newline$'
+	print F5 mean = 'f5mean:3' Hz'newline$'
+	print F6 mean = 'F6mean:3' Hz'newline$'
+	print F7 mean = 'F7mean:3' Hz'newline$'
+	print F8 mean = 'F8mean:3' Hz'newline$'
+	print formant dispersal = 'df:3''newline$'
+	print vocal tract length = 'vocaltractlength:3''newline$'
+	print Lpc1 = 'lpc1:3' Hz'newline$'
+	print Lpc2 = 'lpc2:3' Hz'newline$'
+	print Lpc3 = 'lpc3:3' Hz'newline$'
+	print Lpc4 = 'lpc4:3' Hz'newline$'
+	print Lpc5 = 'lpc5:3' Hz'newline$'
+	print Lpc6 = 'lpc6:3' Hz'newline$'
+	print Lpc7 = 'lpc7:3' Hz'newline$'
+	print Lpc8 = 'lpc8:3' Hz'newline$'
+	
+	fileappend "'pf_spreadsheet$'" 'f1mean:3','f2mean:3','f3mean:3','f4mean:3','f5mean:3','f6mean:3','f7mean:3','f8mean:3','df:3','vocaltractlength:3',
+	#F1 mean,F2 mean,F3 mean,F4 mean,F5 mean,F6 mean,F7 mean,F8 mean,formant dispersal,vocal tract length,
+endproc
+
+#OR 
+procedure FORMANTSb
+# adapated from Maxime Garcia (VTL)
+	
+	select current_sound
+	To Formant (burg)... time_step_f max_number_of_formants maximum_formant window_length pre_emphasis
+	Down to FormantTier
+	Down to TableOfReal... yes no
+	f1mean  = Get column mean (label)... F1
+	f2mean  = Get column mean (label)... F2
+	f3mean  = Get column mean (label)... F3
+	f4mean  = Get column mean (label)... F4
+	f5mean	= Get column mean (label)... F5
+	f6mean	= Get column mean (label)... F6
+	f7mean	= Get column mean (label)... F7
+	f8mean	= Get column mean (label)... F8
+	df = ((f2mean-f1mean)+(f3mean-f2mean)+(f4mean-f3mean)+(f5mean-f4mean)+(f6mean-f5mean)+(f7mean-f6mean)+(f8mean-f7mean))/7
+	vocaltractlength = 35000/(2*df)
+	
+	print F1 mean = 'f1mean:3' Hz'newline$'
+	print F2 mean = 'f2mean:3' Hz'newline$'
+	print F3 mean = 'f3mean:3' Hz'newline$'
+	print F4 mean = 'f4mean:3' Hz'newline$'
+	print F5 mean = 'f5mean:3' Hz'newline$'
+	print F6 mean = 'f6mean:3' Hz'newline$'
+	print F7 mean = 'f7mean:3' Hz'newline$'
+	print F8 mean = 'f8mean:3' Hz'newline$'
+	print formant dispersal = 'df:3''newline$'
+	print vocal tract length = 'vocaltractlength:3''newline$'
+	
+	fileappend "'pf_spreadsheet$'" 'f1mean:3','f2mean:3','f3mean:3','f4mean:3','f5mean:3','f6mean:3','f7mean:3','f8mean:3','df:3','vocaltractlength:3',
+	#F1 mean,F2 mean,F3 mean,F4 mean,F5 mean,F6 mean,F7 mean,F8 mean,formant dispersal,vocal tract length,
+endproc
+
+procedure WIENERENTROPY
+
+# Adapted from: 
+######################		
+# Copyright (C) 2004  Gabriel J.L. Beckers
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+# Wiener entropy, by Gabriel J.L. Beckers
+# developed in Praat version 4.2.06
+# 2004-07-03
+
+# Wiener entropy is a measure of spectral flatness of a sound.
+# It is defined as the ratio of a power spectrum's geometric mean and
+# its arithmetic mean. It is scaled to a log scale, which ranges from
+# 0 (power spectrum is flat) to minus infinity (power spectrum is 
+# infinitely narrow).
+
+####################
+
+	select current_sound
+
+	frame_duration = 0.01
+	time_stepWE = 0.004
+	start_frequency = 50
+	end_frequency = q75 
+	#this end frequency allows for normalizing data as wiener entropy intrinsically increases with the bandwidth of the sound
+	
+	sampling_period = Get sampling period
+	duration = Get total duration
+	start_time = Get starting time
+	number_of_steps = floor((duration-frame_duration)/time_stepWE) + 1
+
+	sum_wiener_entropy = 0
+	for frame_no from 1 to number_of_steps
+		Extract part... start_time start_time+frame_duration Gaussian1 1 yes
+		sound_frame_id = selected("Sound")
+		#printline 'start_time'
+		start_time = start_time + time_stepWE
+
+		To Spectrum (dft)
+		spectrum_id = selected("Spectrum")
+		Rename... Spectrum
+		number_of_bins = Get number of bins
+		#print nb of bins = 'number_of_bins'
+
+		highest_frequency = Get highest frequency
+		if highest_frequency < end_frequency
+			end_frequency = highest_frequency
+		endif
+		start_bin = Get bin number from frequency... 'start_frequency'
+		end_bin = Get bin number from frequency... 'end_frequency'
+		start_bin = round(start_bin)
+		end_bin = round(end_bin)
+		actual_start_frequency = Get frequency from bin number... 'start_bin'
+		actual_end_frequency = Get frequency from bin number... 'end_bin'
+		number_of_band_bins = end_bin - start_bin + 1
+
+		Create simple Matrix... power_spectrum 1 'number_of_band_bins' 0
+		power_spectrum_id = selected("Matrix")
+		Formula... ((Spectrum_Spectrum [1,col]/sampling_period)^2 + (Spectrum_Spectrum [2,col]/sampling_period)^2)
+
+		sum_power_spectrum = 0
+		for bin from start_bin to end_bin
+			sum_power_spectrum += Matrix_power_spectrum[1,bin]
+		endfor
+		arithmetic_mean = sum_power_spectrum/number_of_band_bins
+		#print arith mean = 'arithmetic_mean' 'newline$'
+	
+		Create simple Matrix... ln_power_spectrum 1 'number_of_band_bins' 0
+		ln_power_spectrum_id = selected("Matrix")
+		Formula... ln(Matrix_power_spectrum[])
+
+		sum_ln_power_spectrum = 0
+		for bin from start_bin to end_bin
+			sum_ln_power_spectrum += Matrix_ln_power_spectrum[1,bin]
+		endfor
+		geometric_mean = exp(sum_ln_power_spectrum/number_of_band_bins)
+		#print nb of band bins = 'number_of_band_bins'
+		#print geom mean = 'geometric_mean' 'newline$'		
+
+		frame_wiener_entropy = ln(geometric_mean/arithmetic_mean)
+		#print 'frame_wiener_entropy' 'newline$'
+		#printline wiener entropy frame 'frame_no': 'frame_wiener_entropy'
+		sum_wiener_entropy += frame_wiener_entropy
+
+		select 'spectrum_id'
+		plus 'power_spectrum_id'	
+		plus 'ln_power_spectrum_id'
+		plus 'sound_frame_id'
+		Remove
+		select current_sound
+	
+	endfor
+
+	wiener_entropy = sum_wiener_entropy/number_of_steps
+	print mean wiener entropy = 'wiener_entropy:3' 'newline$' 
+	fileappend "'pf_spreadsheet$'" 'wiener_entropy:3',
+
+endproc
+
+
+procedure COMMENTS
+#from Maxime Garcia
+
+	beginPause ("Any comment?")
+		comment ("If you have any comment to make on the analysis/sound,")
+		comment ("write it in analysis window and press OK")
+		sentence ("comment", "")
+	
+	# Define button labels
+	anycomment = endPause ("OK", 1)
+	
+	# Explain what to do when OK is pressed
+	if anycomment = 1
+		fileappend "'pf_spreadsheet$'" 'comment$',
+	# Comment
+	endif
+
+endproc
