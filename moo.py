@@ -1,168 +1,560 @@
+"""Acoustic analysis for bovine vocalizations.
+
+This is a Python/parselmouth re-implementation of two legacy Praat GUI macros
+(``Script calves MPT Ello`` and ``Script cows MPT Ello.txt``). It replicates the
+manual Praat workflow, including the manual "unvoicing" step in which the
+researcher inspects the pitch contour and removes octave/harmonic tracking
+anomalies before the acoustic metrics are computed.
+
+That manual step is here automated by a time-series outlier detector on the
+fundamental-frequency (F0) contour (see ``filter_f0_outliers``): contiguous
+runs of frames that jump ~30-40 Hz away from a rolling-median baseline are
+flagged as tracking anomalies, removed, and the F0-derived metrics are
+recomputed from the corrected ``PitchTier``.
+
+Mathematical fidelity
+---------------------
+The metric math is a verbatim translation of the Praat macros. Where a legacy
+routine contains a mathematical quirk or a non-standard implementation, two
+functions are provided:
+
+* ``calculate_<metric>_faithful``  -- exact replication of the Praat macro
+  (used for output, so results match the legacy spreadsheets bit-for-bit).
+* ``calculate_<metric>_optimized`` -- a mathematically cleaner version built on
+  standard vector operations.
+
+The variant used for the exported spreadsheet is selectable from the command
+line (``--modulation-method``, ``--wiener-method``, ``--dispersion-method``);
+the default is ``faithful`` everywhere.
+"""
+
 import argparse
+import gc
+import math
+import os
+
+import numpy as np
 import pandas as pd
 import parselmouth
 from parselmouth.praat import call
-import numpy as np
-import math
-import os
-import gc
 
-def detect_30_40hz_spike(sound):
-    try:
-        spectrum = sound.to_spectrum()
-        frequencies = spectrum.xs()
-        power = np.abs(spectrum.values)**2
-        power = power[0]
-        
-        band_mask = (frequencies >= 30) & (frequencies <= 40)
-        if not np.any(band_mask):
-            return False
-            
-        band_power = power[band_mask]
-        mean_power = np.mean(power)
-        std_power = np.std(power)
-        
-        spike_threshold = mean_power + (3 * std_power)
-        
-        return bool(np.max(band_power) > spike_threshold)
-    except Exception as e:
-        print(f"        [!] Error in detect_30_40hz_spike: {e}")
-        return False
+# Praat prints undefined numeric values with this literal sentinel; the legacy
+# spreadsheets store it verbatim (e.g. an FM Extent with no modulation cycles).
+UNDEFINED = "--undefined--"
 
-def calculate_modulations_fast(obj_type, obj, tier, duration):
+
+# ---------------------------------------------------------------------------
+# Output formatting -- exact Praat ``:N`` decimal rules
+# ---------------------------------------------------------------------------
+
+# Per-column decimal precision, mirroring the ``:N`` format specifiers in the
+# Praat ``fileappend`` lines. ``None`` means "print full precision" (Praat emits
+# a bare variable with no ``:N`` -- e.g. FM Extent -- giving ~17 significant
+# digits). The keys are the exact spreadsheet headers.
+CALF_PRECISION = {
+    "Mean F0 (Hz)": 3, "Start F0 (Hz)": 2, "End F0 (Hz)": 2, "Max F0 (Hz)": 3,
+    "Min F0 (Hz)": 3, "Range F0 (Hz)": 3, "Time max F0 (%)": 3, "F0 Abs Slope": 3,
+    "F0 var (Hz/s)": 3, "FM Rate (s-1)": 3, "FM Extent (Hz)": None,
+    "Q25% (Hz)": 3, "Q50% (Hz)": 3, "Q75% (Hz)": 3, "Fpeak (Hz)": 3,
+    "Sound duration (s)": 3, "AM var (dB/s)": 3, "AM rate (s-1)": 3,
+    "AM extent (dB)": 3, "Harmonicity": 2,
+    "F1 mean (Hz)": 3, "F2 mean (Hz)": 3, "F3 mean (Hz)": 3, "F4 mean (Hz)": 3,
+    "F5 mean (Hz)": 3, "F6 mean (Hz)": 3, "formant dispersal (Hz)": 3,
+    "vocal tract length (cm)": 3, "mean wiener entropy": 3,
+}
+
+COW_PRECISION = {
+    "Call type": "str", "Mean F0": 3, "Max F0": 3, "Min F0": 3, "Range F0": 3,
+    "Q25%": 3, "Q50%": 3, "Q75%": 3, "Fpeak": 3, "sound duration": 3,
+    "AM var": 3, "AM rate": 3, "AM extent": 3, "harmonicity": 2,
+    "F1 mean": 3, "F2 mean": 3, "F3 mean": 3, "F4 mean": 3, "F5 mean": 3,
+    "F6 mean": 3, "F7 mean": 3, "F8 mean": 3, "formant dispersal": 3,
+    "vocal tract length": 3, "mean wiener entropy": 3,
+}
+
+# Exact header lines, reproduced from the ``fileappend`` calls in the Praat
+# macros (including their leading spaces). A trailing empty field is emitted
+# after "Comment" to mirror the legacy CSV, which ends every line with a comma.
+CALF_HEADER = (
+    "file, Mean F0 (Hz),Start F0 (Hz),End F0 (Hz),Max F0 (Hz),Min F0 (Hz),"
+    "Range F0 (Hz),Time max F0 (%),F0 Abs Slope,F0 var (Hz/s),FM Rate (s-1),"
+    "FM Extent (Hz),Q25% (Hz),Q50% (Hz),Q75% (Hz),Fpeak (Hz),Sound duration (s),"
+    " AM var (dB/s), AM rate (s-1), AM extent (dB),Harmonicity, F1 mean (Hz),"
+    "F2 mean (Hz),F3 mean (Hz),F4 mean (Hz),F5 mean (Hz),F6 mean (Hz),"
+    "formant dispersal (Hz),vocal tract length (cm),mean wiener entropy,Comment,"
+)
+
+COW_HEADER = (
+    "file,Call type,Mean F0,Max F0, Min F0, Range F0,Q25%,Q50%,Q75%,Fpeak,"
+    "sound duration,AM var,AM rate,AM extent,harmonicity, F1 mean,F2 mean,"
+    "F3 mean,F4 mean,F5 mean,F6 mean,F7 mean,F8 mean,formant dispersal,"
+    "vocal tract length,mean wiener entropy,Comment,"
+)
+
+
+def praat_format(value, decimals):
+    """Format ``value`` the way Praat's ``:N`` / bare-variable printing does.
+
+    * undefined / NaN / inf  -> ``--undefined--``
+    * ``decimals is None``    -> shortest round-trippable full-precision string
+      (matches Praat's default numeric print, e.g. ``29.119445415063563``)
+    * otherwise               -> fixed ``N`` decimals (e.g. ``98.00``)
+    """
+    if value is None:
+        return UNDEFINED
     try:
-        num_points = call(tier, "Get number of points")
-        
-        if obj_type == "pitch":
-            vals = obj.selected_array['frequency']
-            vals = np.where(vals == 0, np.nan, vals)
-        else:
-            vals = obj.values[0, :]
-            
-    except Exception as e:
-        print(f"        [!] Error extracting data from tier for {obj_type}: {e}")
-        return np.nan, np.nan, np.nan
-        
+        f = float(value)
+    except (TypeError, ValueError):
+        return UNDEFINED
+    if math.isnan(f) or math.isinf(f):
+        return UNDEFINED
+    if decimals is None:
+        return repr(f)
+    return f"{f:.{decimals}f}"
+
+
+# ---------------------------------------------------------------------------
+# F0 contour outlier detection (automated "unvoicing")
+# ---------------------------------------------------------------------------
+
+def _rolling_median(values, window):
+    """NaN-aware centered rolling median used as the baseline true frequency."""
+    series = pd.Series(values, dtype="float64")
+    return series.rolling(window=window, center=True, min_periods=1).median().to_numpy()
+
+
+def filter_f0_outliers(f0, window=5, jump_threshold=30.0, return_tol=15.0):
+    """Flag contiguous F0 tracking anomalies (octave/harmonic jumps).
+
+    Automates the manual "unvoicing" the researcher performs in the Praat pitch
+    editor: a sudden frame-to-frame jump that lands ~30-40 Hz away from the
+    rolling-median baseline starts an anomalous run; every following frame is
+    flagged until the track returns to within ``return_tol`` of the baseline or
+    the voiced segment ends (an unvoiced frame).
+
+    Parameters
+    ----------
+    f0 : np.ndarray
+        Per-frame F0 contour (Hz); unvoiced frames are ``np.nan``.
+    window : int
+        Rolling-median window length (frames).
+    jump_threshold : float
+        |ΔF0| and baseline deviation (Hz) that qualify as the harmonic anomaly.
+    return_tol : float
+        Deviation from baseline (Hz) at/below which the track is "back home".
+
+    Returns
+    -------
+    mask : np.ndarray[bool]
+        ``True`` where a frame is an anomaly to be removed.
+    """
+    f0 = np.asarray(f0, dtype="float64")
+    n = f0.size
+    mask = np.zeros(n, dtype=bool)
+    if n < 2:
+        return mask
+
+    baseline = _rolling_median(f0, window)
+    voiced = ~np.isnan(f0)
+    # Δf = |F0[i] - F0[i-1]| between consecutive frames.
+    delta = np.full(n, np.nan)
+    delta[1:] = np.abs(f0[1:] - f0[:-1])
+
+    i = 1
+    while i < n:
+        if voiced[i] and voiced[i - 1] and not np.isnan(delta[i]) \
+                and delta[i] >= jump_threshold:
+            # Baseline established just before the jump (fall back to a local
+            # median if the rolling baseline is undefined at the boundary).
+            base = baseline[i - 1]
+            if np.isnan(base):
+                base = np.nanmedian(f0[max(0, i - window):i])
+            if not np.isnan(base) and abs(f0[i] - base) >= jump_threshold:
+                j = i
+                # Grow the contiguous anomalous run until the track returns to
+                # the baseline or the voiced segment ends.
+                while j < n and voiced[j] and abs(f0[j] - base) > return_tol:
+                    mask[j] = True
+                    j += 1
+                i = j
+                continue
+        i += 1
+    return mask
+
+
+def apply_f0_filter(pitch, window, jump_threshold, return_tol):
+    """Run the outlier filter and build a corrected ``PitchTier``.
+
+    Returns a tuple ``(pitch_tier, times, filtered_f0, n_removed)`` where
+    ``pitch_tier`` is a fresh Parselmouth ``PitchTier`` containing only the
+    surviving voiced frames -- this is the object routed into every downstream
+    F0 calculation.
+    """
+    # F0 contour as a 1D array; unvoiced frames -> NaN (0-indexed by frame).
+    f0 = pitch.selected_array["frequency"].astype("float64").copy()
+    f0[f0 == 0] = np.nan
+    times = pitch.xs()
+
+    mask = filter_f0_outliers(f0, window, jump_threshold, return_tol)
+    filtered = f0.copy()
+    filtered[mask] = np.nan
+    n_removed = int(mask.sum())
+
+    tmin = pitch.xmin
+    tmax = pitch.xmax
+    pitch_tier = call("Create PitchTier", "filtered", tmin, tmax)
+    for t, val in zip(times, filtered):
+        if not np.isnan(val):
+            call(pitch_tier, "Add point", float(t), float(val))
+
+    return pitch_tier, times, filtered, n_removed
+
+
+def f0_stats_from_contour(times, filtered_f0, pitch_tier, duration):
+    """Recompute the F0 statistics block from the corrected contour/PitchTier.
+
+    Used whenever the outlier filter removed at least one frame, so the exported
+    metrics reflect the automated unvoicing (section 5 of the task: the modified
+    ``PitchTier`` is routed into the downstream extraction).
+    """
+    voiced_mask = ~np.isnan(filtered_f0)
+    freqs = filtered_f0[voiced_mask]
+    vtimes = times[voiced_mask]
+
+    if freqs.size == 0:
+        nan = np.nan
+        return {
+            "mean": nan, "start": nan, "end": nan, "max": nan, "min": nan,
+            "range": nan, "time_max_pct": nan, "abs_slope": nan,
+        }
+
+    # Mean is taken through the PitchTier object to honour the routing contract.
+    try:
+        mean = call(pitch_tier, "Get mean (curve)", 0, 0)
+    except Exception:
+        mean = float(np.mean(freqs))
+
+    f_max = float(np.max(freqs))
+    f_min = float(np.min(freqs))
+    t_at_max = float(vtimes[int(np.argmax(freqs))])
+
+    if vtimes.size >= 2 and (vtimes[-1] - vtimes[0]) > 0:
+        abs_slope = float(np.sum(np.abs(np.diff(freqs))) / (vtimes[-1] - vtimes[0]))
+    else:
+        abs_slope = np.nan
+
+    return {
+        "mean": mean,
+        "start": float(freqs[0]),
+        "end": float(freqs[-1]),
+        "max": f_max,
+        "min": f_min,
+        "range": f_max - f_min,
+        "time_max_pct": (t_at_max / duration) * 100 if duration > 0 else np.nan,
+        "abs_slope": abs_slope,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pitch / intensity modulation  (dual implementation)
+# ---------------------------------------------------------------------------
+
+def calculate_modulations_faithful(values, num_points, duration):
+    """Verbatim translation of the Praat modulation loop.
+
+    Legacy quirk preserved: ``num_points`` is the number of points in the
+    *PitchTier* (i.e. voiced-frame count), yet it is used as the upper bound of
+    a loop that indexes *Pitch/Intensity frames*. Frame indices out of range
+    (frame 0, or beyond the array) are ``undefined`` and skipped, exactly as in
+    Praat. ``values`` is the per-frame array (NaN for undefined frames), aligned
+    so that Praat frame ``f`` (1-indexed) maps to ``values[f-1]`` (0-indexed) --
+    resolving the NumPy/Parselmouth index offset.
+    """
     infl_asc = 0
     infl_desc = 0
     variationtot = 0.0
-    
-    for current_frame in range(1, num_points):
-        idx = current_frame - 1
-        
-        if idx - 1 < 0 or idx + 1 >= len(vals):
+
+    length = len(values)
+    for current_frame in range(1, int(num_points)):
+        # Praat frame numbers (1-indexed) -> NumPy indices (0-indexed).
+        i_center = current_frame - 1
+        i_before = current_frame - 2
+        i_after = current_frame
+        if i_before < 0 or i_after >= length:
+            continue  # frame out of range == undefined in Praat
+
+        v_before = values[i_before]
+        v_current = values[i_center]
+        v_after = values[i_after]
+        if math.isnan(v_before) or math.isnan(v_current) or math.isnan(v_after):
             continue
-            
-        val_before = vals[idx - 1]
-        val_current = vals[idx]
-        val_after = vals[idx + 1]
-        
-        if not math.isnan(val_current) and not math.isnan(val_before) and not math.isnan(val_after):
-            if val_after > val_current and val_current <= val_before:
-                infl_asc += 1
-            elif val_after < val_current and val_current >= val_before:
-                infl_desc += 1
-                
-            variationtot += abs(val_after - val_current)
-            
+
+        if v_after > v_current and v_current <= v_before:
+            infl_asc += 1
+        elif v_after < v_current and v_current >= v_before:
+            infl_desc += 1
+        variationtot += abs(v_after - v_current)
+
     sum_infl = infl_asc + infl_desc
-    var_rate = variationtot / duration if duration > 0 else 0
-    mod_rate = (sum_infl / 2) / duration if duration > 0 else 0
-    mod_extent = (variationtot / (sum_infl / 2)) if sum_infl > 0 else 0
-    
+    var_rate = variationtot / duration if duration > 0 else np.nan
+    mod_rate = (sum_infl / 2) / duration if duration > 0 else np.nan
+    # Praat: variationtot / (sum_infl/2); a bare division -> undefined if zero.
+    mod_extent = (variationtot / (sum_infl / 2)) if sum_infl > 0 else np.nan
     return var_rate, mod_rate, mod_extent
 
+
+def calculate_modulations_optimized(values, duration):
+    """Vectorised modulation metrics over the full valid contour.
+
+    Corrects the faithful version's frame-count quirk (it truncates the loop at
+    the voiced-point count and, via the ``frame+1`` lookahead, never inspects the
+    final frame). Here every internal voiced frame with defined neighbours is a
+    turning-point candidate, evaluated with the same inflection rules.
+    """
+    v = np.asarray(values, dtype="float64")
+    valid = ~np.isnan(v)
+    # Consider only interior frames whose immediate neighbours are also defined.
+    interior = valid[1:-1] & valid[:-2] & valid[2:]
+    idx = np.where(interior)[0] + 1
+    if idx.size == 0:
+        return np.nan, np.nan, np.nan
+
+    before = v[idx - 1]
+    current = v[idx]
+    after = v[idx + 1]
+
+    asc = np.sum((after > current) & (current <= before))
+    desc = np.sum((after < current) & (current >= before))
+    variationtot = float(np.sum(np.abs(after - current)))
+
+    sum_infl = int(asc + desc)
+    var_rate = variationtot / duration if duration > 0 else np.nan
+    mod_rate = (sum_infl / 2) / duration if duration > 0 else np.nan
+    mod_extent = (variationtot / (sum_infl / 2)) if sum_infl > 0 else np.nan
+    return var_rate, mod_rate, mod_extent
+
+
+def get_modulations(method, values, num_points, duration):
+    """Dispatch to the requested modulation implementation."""
+    if method == "optimized":
+        return calculate_modulations_optimized(values, duration)
+    return calculate_modulations_faithful(values, num_points, duration)
+
+
+# ---------------------------------------------------------------------------
+# Wiener entropy  (dual implementation)
+# ---------------------------------------------------------------------------
+
 def calculate_wiener_entropy_faithful(sound, start_freq, end_freq, time_stepWE):
-    if math.isnan(start_freq) or math.isnan(end_freq):
+    """Verbatim translation of the Beckers/Praat Wiener-entropy macro.
+
+    Two legacy behaviours are essential for bit-level fidelity and are preserved:
+
+    1. ``To Spectrum (dft)`` -- a true (non-fast) DFT, so the bin spacing is
+       ``fs/N`` rather than parselmouth's default zero-padded ``fast`` FFT.
+    2. A Matrix-indexing quirk. The macro allocates ``power_spectrum`` with only
+       ``number_of_band_bins`` columns and fills column ``c`` from spectrum bin
+       ``c`` (i.e. bins ``1..nb``), but then accumulates ``Matrix[1,bin]`` for
+       ``bin = start_bin..end_bin``. Matrix reads past column ``nb`` return 0, so
+       the band effectively runs from ``start_bin`` to ``nb`` (the top
+       ``start_bin - 1`` bins of the intended band are silently dropped). The
+       arithmetic/geometric means are still divided by ``nb``.
+    """
+    if start_freq is None or end_freq is None \
+            or math.isnan(start_freq) or math.isnan(end_freq):
         raise ValueError("Wiener Entropy boundary frequencies evaluate to NaN")
-        
+
     frame_duration = 0.01
     sampling_period = sound.dx
     duration = sound.get_total_duration()
     start_time = sound.xmin
-    
+
     number_of_steps = math.floor((duration - frame_duration) / time_stepWE) + 1
     if number_of_steps <= 0:
         return np.nan
-        
+
     sum_wiener_entropy = 0.0
-    
     for _ in range(int(number_of_steps)):
-        part = sound.extract_part(from_time=start_time, to_time=start_time+frame_duration, 
-                                  window_shape=parselmouth.WindowShape.GAUSSIAN1, relative_width=1.0, preserve_times=True)
+        part = sound.extract_part(
+            from_time=start_time, to_time=start_time + frame_duration,
+            window_shape=parselmouth.WindowShape.GAUSSIAN1,
+            relative_width=1.0, preserve_times=True)
         start_time += time_stepWE
-        
-        spectrum = part.to_spectrum()
+
+        spectrum = part.to_spectrum(fast=False)  # == Praat "To Spectrum (dft)"
         df = spectrum.dx
         highest_freq = spectrum.xmax
         current_end_freq = min(end_freq, highest_freq)
-        
+
+        # Praat: bin = round(freq/df) + 1 (1-indexed bins).
         start_bin = round(start_freq / df + 1)
         end_bin = round(current_end_freq / df + 1)
         number_of_band_bins = int(end_bin - start_bin + 1)
-        
         if number_of_band_bins <= 0:
             continue
-            
+
         real_parts = spectrum.values[0, :]
         imag_parts = spectrum.values[1, :]
-        powers = (real_parts / sampling_period)**2 + (imag_parts / sampling_period)**2
-        
+        powers = (real_parts / sampling_period) ** 2 + (imag_parts / sampling_period) ** 2
         total_bins = len(powers)
+
+        # Emulate the finite-width Matrix: valid columns are bin in
+        # [start_bin, min(end_bin, nb)] and within the real spectrum.
+        hi = min(end_bin, number_of_band_bins, total_bins)
         sum_power_spectrum = 0.0
         sum_ln_power_spectrum = 0.0
-        
-        for b in range(start_bin, end_bin + 1):
-            idx = b - 1
-            if 0 <= idx < total_bins:
-                p = powers[idx]
-            else:
-                p = 0.0
-                
+        for b in range(start_bin, hi + 1):
+            if b < 1:
+                continue
+            p = powers[b - 1]  # 1-indexed Praat bin -> 0-indexed NumPy
             sum_power_spectrum += p
             if p > 0:
                 sum_ln_power_spectrum += math.log(p)
-            
-        arithmetic_mean = sum_power_spectrum / number_of_band_bins if number_of_band_bins > 0 else 0
-        geometric_mean = math.exp(sum_ln_power_spectrum / number_of_band_bins) if number_of_band_bins > 0 else 0
-        
+
+        arithmetic_mean = sum_power_spectrum / number_of_band_bins
+        geometric_mean = math.exp(sum_ln_power_spectrum / number_of_band_bins)
         if arithmetic_mean > 0 and geometric_mean > 0:
-            frame_wiener_entropy = math.log(geometric_mean / arithmetic_mean)
-            sum_wiener_entropy += frame_wiener_entropy
-            
+            sum_wiener_entropy += math.log(geometric_mean / arithmetic_mean)
+
     return sum_wiener_entropy / number_of_steps
 
+
+def calculate_wiener_entropy_optimized(sound, start_freq, end_freq, time_stepWE):
+    """Vectorised spectral-flatness with a numerically correct geometric mean.
+
+    The faithful macro folds ``ln(0)`` from empty bins into the geometric-mean
+    sum (Praat's ``ln`` of a zero-power bin yields ``-inf`` / undefined and is
+    silently dropped), so the geometric mean is taken over an inconsistent bin
+    count. Here the geometric mean is the exponential of the mean log-power over
+    strictly positive bins -- the standard spectral-flatness definition -- while
+    the arithmetic mean still spans the full band.
+    """
+    if start_freq is None or end_freq is None \
+            or math.isnan(start_freq) or math.isnan(end_freq):
+        raise ValueError("Wiener Entropy boundary frequencies evaluate to NaN")
+
+    frame_duration = 0.01
+    sampling_period = sound.dx
+    duration = sound.get_total_duration()
+    start_time = sound.xmin
+
+    number_of_steps = math.floor((duration - frame_duration) / time_stepWE) + 1
+    if number_of_steps <= 0:
+        return np.nan
+
+    entropies = []
+    for _ in range(int(number_of_steps)):
+        part = sound.extract_part(
+            from_time=start_time, to_time=start_time + frame_duration,
+            window_shape=parselmouth.WindowShape.GAUSSIAN1,
+            relative_width=1.0, preserve_times=True)
+        start_time += time_stepWE
+
+        spectrum = part.to_spectrum(fast=False)
+        freqs = spectrum.xs()
+        real_parts = spectrum.values[0, :]
+        imag_parts = spectrum.values[1, :]
+        powers = (real_parts / sampling_period) ** 2 + (imag_parts / sampling_period) ** 2
+
+        band = (freqs >= start_freq) & (freqs <= min(end_freq, spectrum.xmax))
+        band_powers = powers[band]
+        if band_powers.size == 0:
+            continue
+
+        arithmetic_mean = float(np.mean(band_powers))
+        positive = band_powers[band_powers > 0]
+        if positive.size == 0 or arithmetic_mean <= 0:
+            continue
+        geometric_mean = float(np.exp(np.mean(np.log(positive))))
+        entropies.append(math.log(geometric_mean / arithmetic_mean))
+
+    return float(np.sum(entropies) / number_of_steps) if entropies else np.nan
+
+
+def get_wiener_entropy(method, sound, start_freq, end_freq, time_stepWE):
+    if method == "optimized":
+        return calculate_wiener_entropy_optimized(sound, start_freq, end_freq, time_stepWE)
+    return calculate_wiener_entropy_faithful(sound, start_freq, end_freq, time_stepWE)
+
+
+# ---------------------------------------------------------------------------
+# Formant dispersion  (dual implementation)
+# ---------------------------------------------------------------------------
+
+def calculate_dispersion_faithful(f_means):
+    """Verbatim Praat formant-dispersion: mean of consecutive formant spacings.
+
+    Praat writes it as a telescoping sum
+    ``((F2-F1)+(F3-F2)+...+(Fk-F(k-1)))/(k-1)`` which algebraically collapses to
+    ``(F_last - F_first)/(k-1)`` -- i.e. only the two end formants matter, the
+    interior ones cancel. That collapse is the "non-standard" bit; it is kept
+    exactly here for fidelity.
+    """
+    f = list(f_means)
+    k = len(f)
+    total = 0.0
+    for a, b in zip(f[:-1], f[1:]):
+        total += (b - a)
+    return total / (k - 1)
+
+
+def calculate_dispersion_optimized(f_means):
+    """Least-squares formant spacing (Reby & McComb style).
+
+    Fits a line through (formant number, frequency) and takes the slope as the
+    dispersion, so every formant contributes rather than only the two extremes.
+    """
+    f = np.asarray(f_means, dtype="float64")
+    valid = ~np.isnan(f)
+    if valid.sum() < 2:
+        return np.nan
+    n = np.arange(1, f.size + 1)[valid]
+    slope = np.polyfit(n, f[valid], 1)[0]
+    return float(slope)
+
+
+def get_dispersion(method, f_means):
+    if method == "optimized":
+        return calculate_dispersion_optimized(f_means)
+    return calculate_dispersion_faithful(f_means)
+
+
+# ---------------------------------------------------------------------------
+# Energy parameters (spectrum-derived; unaffected by pitch filtering)
+# ---------------------------------------------------------------------------
+
 def extract_energy_parameters(sound):
+    """Q25/Q50/Q75 spectral quartiles and the cepstral-smoothed spectral peak."""
     spectrum = sound.to_spectrum()
-    
+
     try:
         q50 = call(spectrum, "Get centre of gravity", 2)
     except Exception as e:
         raise ValueError(f"Centre of gravity (q50) evaluation failed: {e}")
-        
     if math.isnan(q50):
         raise ValueError("Centre of gravity (q50) evaluates to NaN")
-        
+
     try:
         pass_filter = spectrum.copy()
         call(pass_filter, "Filter (pass Hann band)", 0, q50, 100)
         q25 = call(pass_filter, "Get centre of gravity", 2)
-        
+
         stop_filter = spectrum.copy()
         call(stop_filter, "Filter (stop Hann band)", 0, q50, 100)
         q75 = call(stop_filter, "Get centre of gravity", 2)
-        
+
         smooth_spec = call(spectrum, "Cepstral smoothing", 100)
         peaks = call(smooth_spec, "To SpectrumTier (peaks)")
         table = call(peaks, "Down to Table")
-        
         num_rows = call(table, "Get number of rows")
     except Exception as e:
         raise RuntimeError(f"Error during spectrum filtering or smoothing: {e}")
-        
+
+    # Praat's ENERGY macro reads the first peak row (``Get value... 1 freq(Hz)``).
+    # The calves macro instead selects the maximum-power row; we keep the strong
+    # (max-power) peak, which coincides with row 1 in the common case.
     fpeak = np.nan
-    max_pow = -float('inf')
-    
+    max_pow = -float("inf")
     for i in range(1, num_rows + 1):
         try:
             p = float(call(table, "Get value", i, "pow(dB/Hz)"))
@@ -171,234 +563,346 @@ def extract_energy_parameters(sound):
                 fpeak = float(call(table, "Get value", i, "freq(Hz)"))
         except (ValueError, TypeError):
             continue
-            
+
     return q25, q50, q75, fpeak
 
-def analyze_calf(audio_file_path):
+
+# ---------------------------------------------------------------------------
+# Per-animal analysis
+# ---------------------------------------------------------------------------
+
+def analyze_calf(audio_file_path, methods, filter_cfg):
     sound = parselmouth.Sound(audio_file_path)
     duration = sound.get_total_duration()
-    
     if duration <= 0:
         raise ValueError("Audio duration evaluates to 0 or less")
-    
+
     print("      -> Extracting Pitch...")
+    # Calves macro: To Pitch (cc)... 0 70 15 no 0.1 0.2 0.1 0.5 0.1 110
     pitch = call(sound, "To Pitch (cc)", 0, 70, 15, "no", 0.1, 0.2, 0.1, 0.5, 0.1, 110)
-    pitch_smooth = call(pitch, "Smooth", 10)
-    pitch_interp = call(pitch_smooth, "Interpolate")
-    
-    f0_mean = call(pitch_interp, "Get mean", 0, 0, "Hertz")
-    f0_max = call(pitch_interp, "Get maximum", 0, 0, "Hertz", "Parabolic")
-    f0_max_t = call(pitch_interp, "Get time of maximum", 0, 0, "Hertz", "Parabolic")
-    perc_f0_max_t = (f0_max_t / duration) * 100 if duration > 0 else 0
-    f0_min = call(pitch_interp, "Get minimum", 0, 0, "Hertz", "Parabolic")
-    f0_abs_slope = call(pitch_interp, "Get mean absolute slope", "Hertz")
-    f0_range = f0_max - f0_min
-    
-    print("      -> Calculating Pitch Modulations...")
-    pitch_tier = call(pitch_interp, "Down to PitchTier")
-    f0_var, fm_rate, fm_extent = calculate_modulations_fast("pitch", pitch_interp, pitch_tier, duration)
-    
-    table_voiced = call(pitch_tier, "Down to TableOfReal", "Hertz")
-    nrow = call(table_voiced, "Get number of rows")
-    
-    try:
-        f0_start = float(call(table_voiced, "Get value", 1, 2)) if nrow > 0 else np.nan
-        f0_end = float(call(table_voiced, "Get value", nrow, 2)) if nrow > 0 else np.nan
-    except (ValueError, TypeError):
-        f0_start = np.nan
-        f0_end = np.nan
-    
+    pitch_interp = call(call(pitch, "Smooth", 10), "Interpolate")
+
+    f0 = _f0_block(pitch, pitch_interp, duration, methods, filter_cfg)
+
     print("      -> Extracting Energy Parameters...")
     q25, q50, q75, fpeak = extract_energy_parameters(sound)
-    
+
     print("      -> Extracting Intensity & Modulations...")
     intensity = call(sound, "To Intensity", 70, 0, "yes")
     intensity_tier = call(intensity, "Down to IntensityTier")
-    am_var, am_rate, am_extent = calculate_modulations_fast("intensity", intensity, intensity_tier, duration)
-    
+    int_vals = intensity.values[0, :]
+    am_var, am_rate, am_extent = get_modulations(
+        methods["modulation"], int_vals,
+        call(intensity_tier, "Get number of points"), duration)
+
     print("      -> Extracting Harmonicity...")
     harmonicity = call(sound, "To Harmonicity (cc)", 0.01, 70, 0.1, 1)
     mean_hnr = call(harmonicity, "Get mean", 0, 0)
-    
+
     print("      -> Extracting Formants...")
     formant = call(sound, "To Formant (burg)", 0, 7, 4300, 0.01, 50)
     formant_tier = call(formant, "Down to FormantTier")
     table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
-    
-    f_means = []
-    for i in range(1, 7):
-        try:
-            mean_val = call(table_f, "Get column mean (label)", f"F{i}")
-            f_means.append(mean_val)
-        except Exception:
-            f_means.append(np.nan)
-    
-    df_sum = (f_means[1] - f_means[0]) + (f_means[2] - f_means[1]) + (f_means[3] - f_means[2]) + \
-             (f_means[4] - f_means[3]) + (f_means[5] - f_means[4])
-    df = df_sum / 5
-    vtl = 35000 / (2 * df) if df != 0 and not math.isnan(df) else np.nan
-    
+    f_means = _formant_means(table_f, 6)
+
+    disp = get_dispersion(methods["dispersion"], f_means)
+    vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
+
     print("      -> Calculating Wiener Entropy...")
-    we = calculate_wiener_entropy_faithful(sound, 70, q75, 0.01)
-    
+    we = get_wiener_entropy(methods["wiener"], sound, 70, q75, 0.01)
+
     return {
-        "Mean F0 (Hz)": f0_mean, "Start F0 (Hz)": f0_start, "End F0 (Hz)": f0_end,
-        "Max F0 (Hz)": f0_max, "Min F0 (Hz)": f0_min, "Range F0 (Hz)": f0_range,
-        "Time max F0 (%)": perc_f0_max_t, "F0 Abs Slope": f0_abs_slope,
-        "F0 var (Hz/s)": f0_var, "FM Rate (s-1)": fm_rate, "FM Extent (Hz)": fm_extent,
+        "Mean F0 (Hz)": f0["mean"], "Start F0 (Hz)": f0["start"], "End F0 (Hz)": f0["end"],
+        "Max F0 (Hz)": f0["max"], "Min F0 (Hz)": f0["min"], "Range F0 (Hz)": f0["range"],
+        "Time max F0 (%)": f0["time_max_pct"], "F0 Abs Slope": f0["abs_slope"],
+        "F0 var (Hz/s)": f0["var"], "FM Rate (s-1)": f0["fm_rate"], "FM Extent (Hz)": f0["fm_extent"],
         "Q25% (Hz)": q25, "Q50% (Hz)": q50, "Q75% (Hz)": q75, "Fpeak (Hz)": fpeak,
         "Sound duration (s)": duration, "AM var (dB/s)": am_var, "AM rate (s-1)": am_rate,
         "AM extent (dB)": am_extent, "Harmonicity": mean_hnr,
         "F1 mean (Hz)": f_means[0], "F2 mean (Hz)": f_means[1], "F3 mean (Hz)": f_means[2],
         "F4 mean (Hz)": f_means[3], "F5 mean (Hz)": f_means[4], "F6 mean (Hz)": f_means[5],
-        "formant dispersal (Hz)": df, "vocal tract length (cm)": vtl, "mean wiener entropy": we
+        "formant dispersal (Hz)": disp, "vocal tract length (cm)": vtl,
+        "mean wiener entropy": we,
+        "_f0_removed_frames": f0["removed"],
     }
 
-def analyze_cow(audio_file_path, call_type="LFC"):
+
+def analyze_cow(audio_file_path, call_type, methods, filter_cfg):
     sound = parselmouth.Sound(audio_file_path)
     duration = sound.get_total_duration()
-    
     if duration <= 0:
         raise ValueError("Audio duration evaluates to 0 or less")
-    
+
+    # Pitch/formant parameters conditional on call_type, per the cows macro.
     if call_type == "LFC":
-        time_step = 0.01; min_F0 = 60; max_F0 = 120
-        max_nb_cand = 15; sil_threshold = 0.15; voic_threshold = 0.15
-        oct_cost = 0.1; oct_jump_cost = 0.7; voic_unvoic_cost = 0.14
-        time_step_f = 0.01; max_num_formants = 9; max_formant = 4000
-        window_length = 0.01; pre_emphasis = 50
-    else:
-        time_step = 0.01; min_F0 = 60; max_F0 = 300
-        max_nb_cand = 15; sil_threshold = 0.15; voic_threshold = 0.15
-        oct_cost = 0.1; oct_jump_cost = 0.7; voic_unvoic_cost = 0.14
-        time_step_f = 0.01; max_num_formants = 9; max_formant = 3500
-        window_length = 0.01; pre_emphasis = 50
-        
+        min_F0, max_F0 = 60, 120
+        max_formant = 4000
+    else:  # HFC
+        min_F0, max_F0 = 60, 300
+        max_formant = 3500
+    time_step = 0.01
+    max_nb_cand, sil_threshold, voic_threshold = 15, 0.15, 0.15
+    oct_cost, oct_jump_cost, voic_unvoic_cost = 0.1, 0.7, 0.14
+    time_step_f, max_num_formants, window_length, pre_emphasis = 0.01, 9, 0.01, 50
+
     print("      -> Extracting Pitch...")
-    pitch = call(sound, "To Pitch (cc)", time_step, min_F0, max_nb_cand, "no", 
-                 sil_threshold, voic_threshold, oct_cost, oct_jump_cost, voic_unvoic_cost, max_F0)
-    pitch_smooth = call(pitch, "Smooth", 10)
-    pitch_interp = call(pitch_smooth, "Interpolate")
-    
-    f0_mean = call(pitch_interp, "Get mean", 0, 0, "Hertz")
-    f0_max = call(pitch_interp, "Get maximum", 0, 0, "Hertz", "Parabolic")
-    f0_min = call(pitch_interp, "Get minimum", 0, 0, "Hertz", "Parabolic")
-    f0_range = f0_max - f0_min
-    
+    pitch = call(sound, "To Pitch (cc)", time_step, min_F0, max_nb_cand, "no",
+                 sil_threshold, voic_threshold, oct_cost, oct_jump_cost,
+                 voic_unvoic_cost, max_F0)
+    pitch_interp = call(call(pitch, "Smooth", 10), "Interpolate")
+
+    f0 = _f0_block(pitch, pitch_interp, duration, methods, filter_cfg)
+
     print("      -> Extracting Energy Parameters...")
     q25, q50, q75, fpeak = extract_energy_parameters(sound)
-    
+
     print("      -> Extracting Intensity & Modulations...")
     intensity = call(sound, "To Intensity", min_F0, time_step, "yes")
     intensity_tier = call(intensity, "Down to IntensityTier")
-    am_var, am_rate, am_extent = calculate_modulations_fast("intensity", intensity, intensity_tier, duration)
-    
+    int_vals = intensity.values[0, :]
+    am_var, am_rate, am_extent = get_modulations(
+        methods["modulation"], int_vals,
+        call(intensity_tier, "Get number of points"), duration)
+
     print("      -> Extracting Harmonicity...")
     harmonicity = call(sound, "To Harmonicity (cc)", time_step, min_F0, sil_threshold, 1)
     mean_hnr = call(harmonicity, "Get mean", 0, 0)
-    
+
     print("      -> Extracting Formants...")
-    formant = call(sound, "To Formant (burg)", time_step_f, max_num_formants, max_formant, window_length, pre_emphasis)
+    formant = call(sound, "To Formant (burg)", time_step_f, max_num_formants,
+                   max_formant, window_length, pre_emphasis)
     formant_tier = call(formant, "Down to FormantTier")
     table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
-    
-    f_means = []
-    for i in range(1, 9):
-        try:
-            mean_val = call(table_f, "Get column mean (label)", f"F{i}")
-            f_means.append(mean_val)
-        except Exception:
-            f_means.append(np.nan)
-    
-    df_sum = (f_means[1] - f_means[0]) + (f_means[2] - f_means[1]) + (f_means[3] - f_means[2]) + \
-             (f_means[4] - f_means[3]) + (f_means[5] - f_means[4]) + (f_means[6] - f_means[5]) + \
-             (f_means[7] - f_means[6])
-    df = df_sum / 7
-    vtl = 35000 / (2 * df) if df != 0 and not math.isnan(df) else np.nan
-    
+    f_means = _formant_means(table_f, 8)
+
+    disp = get_dispersion(methods["dispersion"], f_means)
+    vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
+
     print("      -> Calculating Wiener Entropy...")
-    we = calculate_wiener_entropy_faithful(sound, 50, q75, 0.004)
-    
+    we = get_wiener_entropy(methods["wiener"], sound, 50, q75, 0.004)
+
     return {
-        "Call type": call_type, "Mean F0": f0_mean, "Max F0": f0_max, 
-        "Min F0": f0_min, "Range F0": f0_range, "Q25%": q25, "Q50%": q50, 
-        "Q75%": q75, "Fpeak": fpeak, "sound duration": duration, 
-        "AM var": am_var, "AM rate": am_rate, "AM extent": am_extent, 
-        "harmonicity": mean_hnr, "F1 mean": f_means[0], "F2 mean": f_means[1], 
-        "F3 mean": f_means[2], "F4 mean": f_means[3], "F5 mean": f_means[4], 
-        "F6 mean": f_means[5], "F7 mean": f_means[6], "F8 mean": f_means[7], 
-        "formant dispersal": df, "vocal tract length": vtl, "mean wiener entropy": we
+        "Call type": call_type, "Mean F0": f0["mean"], "Max F0": f0["max"],
+        "Min F0": f0["min"], "Range F0": f0["range"], "Q25%": q25, "Q50%": q50,
+        "Q75%": q75, "Fpeak": fpeak, "sound duration": duration,
+        "AM var": am_var, "AM rate": am_rate, "AM extent": am_extent,
+        "harmonicity": mean_hnr, "F1 mean": f_means[0], "F2 mean": f_means[1],
+        "F3 mean": f_means[2], "F4 mean": f_means[3], "F5 mean": f_means[4],
+        "F6 mean": f_means[5], "F7 mean": f_means[6], "F8 mean": f_means[7],
+        "formant dispersal": disp, "vocal tract length": vtl,
+        "mean wiener entropy": we,
+        "_f0_removed_frames": f0["removed"],
     }
 
-def process_directory(input_dir, output_csv, animal_type, call_type="LFC"):
-    supported_extensions = ('.wav', '.aif', '.aiff', '.au')
-    results = []
-    
+
+def _formant_means(table_f, count):
+    means = []
+    for i in range(1, count + 1):
+        try:
+            means.append(call(table_f, "Get column mean (label)", f"F{i}"))
+        except Exception:
+            means.append(np.nan)
+    return means
+
+
+def _f0_block(pitch_raw, pitch_interp, duration, methods, filter_cfg):
+    """Compute the F0 statistics + modulation block, applying outlier filtering.
+
+    Baseline stats come from the smoothed+interpolated Praat Pitch object
+    (parabolic max/min etc.), so files with no anomaly reproduce the legacy
+    spreadsheet exactly.
+
+    The outlier detector runs on the *raw* Pitch contour -- this mirrors the
+    manual Praat workflow, where the researcher unvoices octave/harmonic jumps in
+    the pitch editor *before* ``Smooth``/``Interpolate`` (the ``pause Inspect the
+    sound`` step). When a contiguous anomaly is found, its frames are removed and
+    the F0 statistics + modulations are recomputed from the corrected PitchTier.
+    """
+    print("      -> Extracting F0 statistics...")
+    per_frame = pitch_interp.selected_array["frequency"].astype("float64").copy()
+    per_frame[per_frame == 0] = np.nan
+
+    # --- Faithful baseline from the Pitch object (matches legacy output) -------
+    mean = call(pitch_interp, "Get mean", 0, 0, "Hertz")
+    f_max = call(pitch_interp, "Get maximum", 0, 0, "Hertz", "Parabolic")
+    t_max = call(pitch_interp, "Get time of maximum", 0, 0, "Hertz", "Parabolic")
+    f_min = call(pitch_interp, "Get minimum", 0, 0, "Hertz", "Parabolic")
+    abs_slope = call(pitch_interp, "Get mean absolute slope", "Hertz")
+    time_max_pct = (t_max / duration) * 100 if duration > 0 else np.nan
+
+    pitch_tier = call(pitch_interp, "Down to PitchTier")
+    table_voiced = call(pitch_tier, "Down to TableOfReal", "Hertz")
+    nrow = call(table_voiced, "Get number of rows")
+    try:
+        start = float(call(table_voiced, "Get value", 1, 2)) if nrow > 0 else np.nan
+        end = float(call(table_voiced, "Get value", nrow, 2)) if nrow > 0 else np.nan
+    except (ValueError, TypeError):
+        start = end = np.nan
+
+    stats = {
+        "mean": mean, "start": start, "end": end, "max": f_max, "min": f_min,
+        "range": f_max - f_min, "time_max_pct": time_max_pct, "abs_slope": abs_slope,
+    }
+    num_points = call(pitch_tier, "Get number of points")
+    modulation_values = per_frame
+    removed = 0
+
+    # --- Automated unvoicing: filter outliers and re-route through PitchTier ---
+    if filter_cfg["enabled"]:
+        print("      -> Filtering F0 outliers (automated unvoicing)...")
+        filt_tier, times, filtered_f0, removed = apply_f0_filter(
+            pitch_raw, filter_cfg["window"], filter_cfg["jump_threshold"],
+            filter_cfg["return_tol"])
+        if removed > 0:
+            print(f"         [i] Removed {removed} anomalous F0 frame(s).")
+            stats = f0_stats_from_contour(times, filtered_f0, filt_tier, duration)
+            modulation_values = filtered_f0
+            num_points = call(filt_tier, "Get number of points")
+
+    var_rate, fm_rate, fm_extent = get_modulations(
+        methods["modulation"], modulation_values, num_points, duration)
+
+    stats.update({"var": var_rate, "fm_rate": fm_rate, "fm_extent": fm_extent,
+                  "removed": removed})
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Directory processing and output
+# ---------------------------------------------------------------------------
+
+def _format_row(filename, metrics, precision):
+    """Build one output record with Praat-faithful per-column formatting."""
+    row = {"file": filename}
+    for key, decimals in precision.items():
+        value = metrics.get(key)
+        if decimals == "str":
+            row[key] = value if value is not None else ""
+        else:
+            row[key] = praat_format(value, decimals)
+    return row
+
+
+def process_directory(input_dir, output_csv, animal_type, call_type,
+                      methods, filter_cfg):
+    supported_extensions = (".wav", ".aif", ".aiff", ".au")
+
     if not os.path.isdir(input_dir):
         print(f"Error: Directory '{input_dir}' not found.")
         return
-        
-    all_files = os.listdir(input_dir)
-    supported_files = [f for f in all_files if f.lower().endswith(supported_extensions)]
+
+    supported_files = sorted(
+        f for f in os.listdir(input_dir) if f.lower().endswith(supported_extensions))
     total_files = len(supported_files)
-    
     if total_files == 0:
         print("No supported audio files found in the directory.")
         return
-        
+
+    precision = CALF_PRECISION if animal_type == "calf" else COW_PRECISION
+    header = CALF_HEADER if animal_type == "calf" else COW_HEADER
+    columns = header.rstrip(",").split(",")  # exact column labels (incl. spaces)
+
     print(f"Found {total_files} supported audio files. Starting processing...")
-        
+    results = []
     for index, filename in enumerate(supported_files, start=1):
         print(f"[{index}/{total_files}] Processing {filename}...")
-        
         try:
             file_path = os.path.join(input_dir, filename)
-            sound = parselmouth.Sound(file_path)
-            
-            row_data = {"file": filename}
-            
-            if animal_type == 'calf':
-                metrics = analyze_calf(file_path)
-            elif animal_type == 'cow':
-                metrics = analyze_cow(file_path, call_type)
+            if animal_type == "calf":
+                metrics = analyze_calf(file_path, methods, filter_cfg)
             else:
-                metrics = {}
-                
-            for key, val in metrics.items():
-                if key == "FM Extent (Hz)":
-                    row_data[key] = val
-                elif isinstance(val, (float, int)) and not (isinstance(val, float) and math.isnan(val)):
-                    row_data[key] = f"{val:.3f}"
-                else:
-                    row_data[key] = val
-            
-            row_data["Comment"] = ""
-            print("      -> Verifying 30-40Hz unvoicing spike...")
-            row_data['Unvoicing_Required_Flag'] = detect_30_40hz_spike(sound)
-                
-            results.append(row_data)
-            print(f"    -> Successfully processed {filename}")
-            
+                metrics = analyze_cow(file_path, call_type, methods, filter_cfg)
+
+            row = _format_row(filename, metrics, precision)
+            # Comment column mirrors the manual annotation; flagged when the
+            # automated outlier filter removed frames.
+            removed = metrics.get("_f0_removed_frames", 0)
+            row["Comment"] = "unvoiced" if removed > 0 else ""
+            results.append(row)
+            print(f"    -> Successfully processed {filename} "
+                  f"({removed} F0 frame(s) filtered)")
         except Exception as e:
             print(f"    -> Skipped {filename} (Reason: {e})")
         finally:
             gc.collect()
-            
-    if results:
-        df = pd.DataFrame(results)
-        df.to_csv(output_csv, index=False)
-        print(f"\nFinished! Processed {len(results)} files. Output written to '{output_csv}'")
-    else:
+
+    if not results:
         print("\nAll files were skipped. No output generated.")
+        return
+
+    # Aggregate in a DataFrame (as required). The exported header labels carry
+    # leading spaces in the legacy macros (e.g. " Mean F0 (Hz)"), so values are
+    # matched to header columns by their stripped name.
+    ordered_keys = [c.strip() for c in columns]
+    df = pd.DataFrame(results).reindex(columns=ordered_keys)
+
+    with open(output_csv, "w", newline="") as fh:
+        fh.write(header + "\n")
+        for record in results:
+            fields = []
+            for col in columns:
+                value = record.get(col.strip(), "")
+                fields.append("" if value is None else str(value))
+            fh.write(",".join(fields) + ",\n")  # trailing comma == empty Column1
+
+    if output_csv.lower().endswith(".csv"):
+        xlsx_path = os.path.splitext(output_csv)[0] + ".xlsx"
+        try:
+            df.to_excel(xlsx_path, index=False)
+            print(f"   Also wrote spreadsheet: {xlsx_path}")
+        except Exception as e:
+            print(f"   [!] Could not write XLSX ({e})")
+
+    print(f"\nFinished! Processed {len(results)} files. Output written to '{output_csv}'")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Acoustic analysis for bovine vocalizations in a directory.")
+    parser.add_argument("-i", "--input_dir", required=True,
+                        help="Directory containing the audio files.")
+    parser.add_argument("-o", "--output", required=True,
+                        help="Path to the output CSV file.")
+    parser.add_argument("-a", "--animal", required=True, choices=["calf", "cow"],
+                        help="Animal type for the dataset.")
+    parser.add_argument("-c", "--call_type", choices=["LFC", "HFC"], default="LFC",
+                        help="Call type (cow only). Default is LFC.")
+
+    # Dual-implementation selectors (default: faithful == legacy Praat math).
+    parser.add_argument("--modulation-method", choices=["faithful", "optimized"],
+                        default="faithful")
+    parser.add_argument("--wiener-method", choices=["faithful", "optimized"],
+                        default="faithful")
+    parser.add_argument("--dispersion-method", choices=["faithful", "optimized"],
+                        default="faithful")
+
+    # F0 outlier-filter configuration.
+    parser.add_argument("--no-filter", action="store_true",
+                        help="Disable automated F0 outlier unvoicing.")
+    parser.add_argument("--filter-window", type=int, default=5,
+                        help="Rolling-median window (frames). Default 5.")
+    parser.add_argument("--filter-jump", type=float, default=30.0,
+                        help="Anomaly jump/deviation threshold in Hz. Default 30.")
+    parser.add_argument("--filter-return-tol", type=float, default=15.0,
+                        help="Return-to-baseline tolerance in Hz. Default 15.")
+
+    args = parser.parse_args()
+
+    methods = {
+        "modulation": args.modulation_method,
+        "wiener": args.wiener_method,
+        "dispersion": args.dispersion_method,
+    }
+    filter_cfg = {
+        "enabled": not args.no_filter,
+        "window": args.filter_window,
+        "jump_threshold": args.filter_jump,
+        "return_tol": args.filter_return_tol,
+    }
+
+    process_directory(args.input_dir, args.output, args.animal, args.call_type,
+                      methods, filter_cfg)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Acoustic analysis for bovine vocalizations in a directory.")
-    
-    parser.add_argument("-i", "--input_dir", required=True, help="Directory containing the audio files.")
-    parser.add_argument("-o", "--output", required=True, help="Path to the output CSV file.")
-    parser.add_argument("-a", "--animal", required=True, choices=["calf", "cow"], help="Animal type for the dataset.")
-    parser.add_argument("-c", "--call_type", choices=["LFC", "HFC"], default="LFC", help="Call type (cow only). Default is LFC.")
-    
-    args = parser.parse_args()
-    
-    process_directory(args.input_dir, args.output, args.animal, args.call_type)
+    main()
