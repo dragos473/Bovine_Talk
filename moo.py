@@ -30,16 +30,46 @@ the default is ``faithful`` everywhere.
 
 import argparse
 import contextlib
+import faulthandler
 import gc
 import math
 import multiprocessing as mp
 import os
+import signal
+import sys
 import wave
 
 try:  # Unix only; used for per-file peak-memory reporting.
     import resource
 except ImportError:  # pragma: no cover - Windows
     resource = None
+
+
+def _describe_exit(code):
+    """Human-readable reason for a subprocess exit code.
+
+    Distinguishes a native crash (e.g. a parselmouth/Praat segfault) from an
+    out-of-memory kill, so the two very different failures are not conflated.
+    """
+    win_status = {
+        0xC0000005: "0xC0000005 ACCESS_VIOLATION -- native crash (segfault) in the "
+                    "audio engine, not an out-of-memory condition",
+        0xC00000FD: "0xC00000FD STACK_OVERFLOW in the audio engine",
+        0xC0000409: "0xC0000409 STACK_BUFFER_OVERRUN in the audio engine",
+        0xC0000017: "0xC0000017 STATUS_NO_MEMORY -- out of memory",
+    }
+    if code is None:
+        return "no exit code"
+    if code < 0:  # POSIX: killed by signal -code
+        sig = -code
+        name = signal.Signals(sig).name if sig in {s.value for s in signal.Signals} else f"signal {sig}"
+        if sig == signal.SIGKILL:
+            return f"killed by {name} (SIGKILL) -- typically the OS out-of-memory killer"
+        if sig == signal.SIGSEGV:
+            return f"killed by {name} (SIGSEGV) -- native crash in the audio engine"
+        return f"killed by {name}"
+    # Windows returns the status as a large unsigned code.
+    return win_status.get(code & 0xFFFFFFFF, f"exit code {code}")
 
 import numpy as np
 import pandas as pd
@@ -765,19 +795,25 @@ def _f0_block(pitch_raw, pitch_interp, duration, methods, filter_cfg):
     time_max_pct = (t_max / duration) * 100 if duration > 0 else np.nan
 
     pitch_tier = call(pitch_interp, "Down to PitchTier")
-    table_voiced = call(pitch_tier, "Down to TableOfReal", "Hertz")
-    nrow = call(table_voiced, "Get number of rows")
-    try:
-        start = float(call(table_voiced, "Get value", 1, 2)) if nrow > 0 else np.nan
-        end = float(call(table_voiced, "Get value", nrow, 2)) if nrow > 0 else np.nan
-    except (ValueError, TypeError):
+    n_tier_points = call(pitch_tier, "Get number of points")
+    # A PitchTier with no points cannot be converted to a TableOfReal (Praat
+    # raises "Cannot create cell-less table"); treat it as no voiced start/end.
+    if n_tier_points > 0:
+        table_voiced = call(pitch_tier, "Down to TableOfReal", "Hertz")
+        nrow = call(table_voiced, "Get number of rows")
+        try:
+            start = float(call(table_voiced, "Get value", 1, 2)) if nrow > 0 else np.nan
+            end = float(call(table_voiced, "Get value", nrow, 2)) if nrow > 0 else np.nan
+        except (ValueError, TypeError):
+            start = end = np.nan
+    else:
         start = end = np.nan
 
     stats = {
         "mean": mean, "start": start, "end": end, "max": f_max, "min": f_min,
         "range": f_max - f_min, "time_max_pct": time_max_pct, "abs_slope": abs_slope,
     }
-    num_points = call(pitch_tier, "Get number of points")
+    num_points = n_tier_points
     modulation_values = per_frame
     removed = 0
 
@@ -873,6 +909,13 @@ def _analyze_one(filename, input_dir, animal_type, call_type, methods,
 
 def _isolated_entry(queue, *task_args):
     """Subprocess wrapper: run one analysis and post its result + peak RSS."""
+    # Print each stage immediately (so the last line before a native crash is
+    # accurate) and dump a native traceback if the C engine segfaults.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    faulthandler.enable()
     result = _analyze_one(*task_args)
     queue.put((result, _peak_rss_mb()))
 
@@ -897,9 +940,9 @@ def _run_isolated(task_args, timeout):
         return ("error", task_args[0], None, f"timed out after {timeout}s"), None
     if not queue.empty():
         return queue.get()
-    # Child died without posting a result -- almost always an OOM kill (SIGKILL).
+    # Child died without posting a result: a native crash or an OOM kill.
     return ("error", task_args[0], None,
-            f"worker exited (code {proc.exitcode}); likely out of memory"), None
+            f"worker crashed ({_describe_exit(proc.exitcode)})"), None
 
 
 def process_directory(input_dir, output_csv, animal_type, call_type,
@@ -979,6 +1022,9 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
         try:
             df.to_excel(xlsx_path, index=False)
             print(f"   Also wrote spreadsheet: {xlsx_path}")
+        except ImportError:
+            print("   [i] Skipped XLSX sidecar (optional): run 'pip install openpyxl' "
+                  "to also get an .xlsx. The CSV above is complete.")
         except Exception as e:
             print(f"   [!] Could not write XLSX ({e})")
 
@@ -1034,6 +1080,14 @@ def main():
                              "cumulative peak (without), to identify heavy recordings.")
 
     args = parser.parse_args()
+
+    # Flush each stage line immediately and dump a native traceback on a C-level
+    # crash, so an engine segfault is diagnosable rather than a silent exit.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    faulthandler.enable()
 
     methods = {
         "modulation": args.modulation_method,
