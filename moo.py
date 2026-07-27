@@ -29,9 +29,17 @@ the default is ``faithful`` everywhere.
 """
 
 import argparse
+import contextlib
 import gc
 import math
+import multiprocessing as mp
 import os
+import wave
+
+try:  # Unix only; used for per-file peak-memory reporting.
+    import resource
+except ImportError:  # pragma: no cover - Windows
+    resource = None
 
 import numpy as np
 import pandas as pd
@@ -809,8 +817,94 @@ def _format_row(filename, metrics, precision):
     return row
 
 
+def _probe_duration(path):
+    """Read a file's duration from its header without loading the samples.
+
+    Lets the ``--max-duration`` guard reject an oversized recording *before*
+    parselmouth pulls the whole waveform into memory (loading it is itself what
+    would OOM). Header-based for WAV; returns ``None`` (unknown -> proceed) for
+    formats we cannot cheaply probe.
+    """
+    if path.lower().endswith(".wav"):
+        try:
+            with contextlib.closing(wave.open(path, "rb")) as w:
+                rate = w.getframerate()
+                return w.getnframes() / float(rate) if rate else None
+        except Exception:
+            return None
+    return None
+
+
+def _peak_rss_mb():
+    """Current process peak resident set size in MB (None if unavailable)."""
+    if resource is None:
+        return None
+    # ru_maxrss is KB on Linux, bytes on macOS.
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    import sys
+    return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+
+
+def _analyze_one(filename, input_dir, animal_type, call_type, methods,
+                 filter_cfg, max_duration):
+    """Analyze a single file. Returns a picklable status tuple.
+
+    Used both inline and as the entry point for the per-file subprocess in
+    ``--isolate`` mode, so it must not depend on any shared state.
+    """
+    file_path = os.path.join(input_dir, filename)
+    duration = _probe_duration(file_path)
+    if max_duration and duration and duration > max_duration:
+        return ("skip", filename, None,
+                f"duration {duration:.1f}s exceeds --max-duration {max_duration:.1f}s")
+    try:
+        if animal_type == "calf":
+            metrics = analyze_calf(file_path, methods, filter_cfg)
+        else:
+            metrics = analyze_cow(file_path, call_type, methods, filter_cfg)
+        return ("ok", filename, metrics, None)
+    except MemoryError:
+        return ("error", filename, None, "MemoryError (file too large for available RAM)")
+    except Exception as e:  # noqa: BLE001 - report and continue with next file
+        return ("error", filename, None, str(e))
+    finally:
+        gc.collect()
+
+
+def _isolated_entry(queue, *task_args):
+    """Subprocess wrapper: run one analysis and post its result + peak RSS."""
+    result = _analyze_one(*task_args)
+    queue.put((result, _peak_rss_mb()))
+
+
+def _run_isolated(task_args, timeout):
+    """Run one analysis in a fresh subprocess that exits afterwards.
+
+    Guarantees the OS reclaims *all* of that file's memory before the next one
+    (Python's ``del`` frees objects, but glibc often keeps freed heap in its
+    arena, so in-process RSS otherwise stays at the largest file's high-water
+    mark). A file that OOMs only kills its own child; the parent detects the
+    non-zero exit code and moves on.
+    """
+    ctx = mp.get_context("spawn")  # clean interpreter; full reclaim on exit
+    queue = ctx.Queue()
+    proc = ctx.Process(target=_isolated_entry, args=(queue,) + tuple(task_args))
+    proc.start()
+    proc.join(timeout)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+        return ("error", task_args[0], None, f"timed out after {timeout}s"), None
+    if not queue.empty():
+        return queue.get()
+    # Child died without posting a result -- almost always an OOM kill (SIGKILL).
+    return ("error", task_args[0], None,
+            f"worker exited (code {proc.exitcode}); likely out of memory"), None
+
+
 def process_directory(input_dir, output_csv, animal_type, call_type,
-                      methods, filter_cfg):
+                      methods, filter_cfg, max_duration=None, isolate=False,
+                      mem_report=False, timeout=None):
     supported_extensions = (".wav", ".aif", ".aiff", ".au")
 
     if not os.path.isdir(input_dir):
@@ -828,28 +922,37 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
     header = CALF_HEADER if animal_type == "calf" else COW_HEADER
     columns = header.rstrip(",").split(",")  # exact column labels (incl. spaces)
 
-    print(f"Found {total_files} supported audio files. Starting processing...")
+    mode = "isolated subprocess per file" if isolate else "in-process"
+    print(f"Found {total_files} supported audio files. Starting processing ({mode})...")
     results = []
     for index, filename in enumerate(supported_files, start=1):
         print(f"[{index}/{total_files}] Processing {filename}...")
-        try:
-            file_path = os.path.join(input_dir, filename)
-            if animal_type == "calf":
-                metrics = analyze_calf(file_path, methods, filter_cfg)
-            else:
-                metrics = analyze_cow(file_path, call_type, methods, filter_cfg)
+        task_args = (filename, input_dir, animal_type, call_type, methods,
+                     filter_cfg, max_duration)
+        if isolate:
+            result, child_peak = _run_isolated(task_args, timeout)
+        else:
+            result, child_peak = _analyze_one(*task_args), _peak_rss_mb()
 
-            row = _format_row(filename, metrics, precision)
+        status, fname, metrics, info = result
+        if status == "ok":
+            row = _format_row(fname, metrics, precision)
             # Comment column mirrors the manual annotation; flagged when the
             # automated outlier filter removed frames.
             removed = metrics.get("_f0_removed_frames", 0)
             row["Comment"] = "unvoiced" if removed > 0 else ""
             results.append(row)
-            print(f"    -> Successfully processed {filename} "
-                  f"({removed} F0 frame(s) filtered)")
-        except Exception as e:
-            print(f"    -> Skipped {filename} (Reason: {e})")
-        finally:
+            msg = f"    -> Successfully processed {fname} ({removed} F0 frame(s) filtered)"
+        elif status == "skip":
+            msg = f"    -> Skipped {fname} ({info})"
+        else:
+            msg = f"    -> Skipped {fname} (Reason: {info})"
+
+        if mem_report and child_peak is not None:
+            scope = "file" if isolate else "run so far"
+            msg += f"  [peak RSS {scope}: {child_peak:.0f} MB]"
+        print(msg)
+        if not isolate:
             gc.collect()
 
     if not results:
@@ -912,6 +1015,24 @@ def main():
     parser.add_argument("--filter-return-tol", type=float, default=15.0,
                         help="Return-to-baseline tolerance in Hz. Default 15.")
 
+    # Resource / robustness controls for memory-constrained machines.
+    parser.add_argument("--max-duration", type=float, default=None,
+                        help="Skip (with a warning) any recording longer than this "
+                             "many seconds, before it is loaded into memory. WAV files "
+                             "are checked from their header. Default: no limit.")
+    parser.add_argument("--isolate", action="store_true",
+                        help="Analyze each file in its own subprocess that exits "
+                             "afterwards, so the OS fully reclaims memory between files "
+                             "and a single oversized file cannot crash the whole run. "
+                             "Recommended on low-RAM machines (adds per-file startup "
+                             "overhead).")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="Per-file time limit in seconds (--isolate only). A file "
+                             "exceeding it is terminated and skipped. Default: none.")
+    parser.add_argument("--mem-report", action="store_true",
+                        help="Print peak resident memory per file (with --isolate) or "
+                             "cumulative peak (without), to identify heavy recordings.")
+
     args = parser.parse_args()
 
     methods = {
@@ -927,7 +1048,9 @@ def main():
     }
 
     process_directory(args.input_dir, args.output, args.animal, args.call_type,
-                      methods, filter_cfg)
+                      methods, filter_cfg, max_duration=args.max_duration,
+                      isolate=args.isolate, mem_report=args.mem_report,
+                      timeout=args.timeout)
 
 
 if __name__ == "__main__":
