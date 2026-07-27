@@ -535,17 +535,25 @@ def extract_energy_parameters(sound):
         raise ValueError("Centre of gravity (q50) evaluates to NaN")
 
     try:
+        # Free each full-size spectrum copy before allocating the next, so the
+        # working set is `spectrum` + one copy rather than + two copies. On long
+        # recordings each copy is tens of MB, and this stage sets the peak.
         pass_filter = spectrum.copy()
         call(pass_filter, "Filter (pass Hann band)", 0, q50, 100)
         q25 = call(pass_filter, "Get centre of gravity", 2)
+        del pass_filter
 
         stop_filter = spectrum.copy()
         call(stop_filter, "Filter (stop Hann band)", 0, q50, 100)
         q75 = call(stop_filter, "Get centre of gravity", 2)
+        del stop_filter
 
         smooth_spec = call(spectrum, "Cepstral smoothing", 100)
+        del spectrum
         peaks = call(smooth_spec, "To SpectrumTier (peaks)")
+        del smooth_spec
         table = call(peaks, "Down to Table")
+        del peaks
         num_rows = call(table, "Get number of rows")
     except Exception as e:
         raise RuntimeError(f"Error during spectrum filtering or smoothing: {e}")
@@ -583,6 +591,9 @@ def analyze_calf(audio_file_path, methods, filter_cfg):
     pitch_interp = call(call(pitch, "Smooth", 10), "Interpolate")
 
     f0 = _f0_block(pitch, pitch_interp, duration, methods, filter_cfg)
+    # Release the pitch objects before allocating the next full-signal analyses;
+    # peak memory per file is the *sum* of the objects held live at once.
+    del pitch, pitch_interp
 
     print("      -> Extracting Energy Parameters...")
     q25, q50, q75, fpeak = extract_energy_parameters(sound)
@@ -594,21 +605,27 @@ def analyze_calf(audio_file_path, methods, filter_cfg):
     am_var, am_rate, am_extent = get_modulations(
         methods["modulation"], int_vals,
         call(intensity_tier, "Get number of points"), duration)
+    del intensity, intensity_tier, int_vals
 
     print("      -> Extracting Harmonicity...")
     harmonicity = call(sound, "To Harmonicity (cc)", 0.01, 70, 0.1, 1)
     mean_hnr = call(harmonicity, "Get mean", 0, 0)
+    del harmonicity
 
     print("      -> Extracting Formants...")
     formant = call(sound, "To Formant (burg)", 0, 7, 4300, 0.01, 50)
     formant_tier = call(formant, "Down to FormantTier")
     table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
     f_means = _formant_means(table_f, 6)
+    del formant, formant_tier, table_f
 
     disp = get_dispersion(methods["dispersion"], f_means)
     vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
 
     print("      -> Calculating Wiener Entropy...")
+    # Only `sound` is needed from here; reclaim everything else first so the
+    # long per-frame Wiener loop runs with a minimal resident set.
+    gc.collect()
     we = get_wiener_entropy(methods["wiener"], sound, 70, q75, 0.01)
 
     return {
@@ -652,6 +669,9 @@ def analyze_cow(audio_file_path, call_type, methods, filter_cfg):
     pitch_interp = call(call(pitch, "Smooth", 10), "Interpolate")
 
     f0 = _f0_block(pitch, pitch_interp, duration, methods, filter_cfg)
+    # Release the pitch objects before allocating the next full-signal analyses;
+    # peak memory per file is the *sum* of the objects held live at once.
+    del pitch, pitch_interp
 
     print("      -> Extracting Energy Parameters...")
     q25, q50, q75, fpeak = extract_energy_parameters(sound)
@@ -663,10 +683,12 @@ def analyze_cow(audio_file_path, call_type, methods, filter_cfg):
     am_var, am_rate, am_extent = get_modulations(
         methods["modulation"], int_vals,
         call(intensity_tier, "Get number of points"), duration)
+    del intensity, intensity_tier, int_vals
 
     print("      -> Extracting Harmonicity...")
     harmonicity = call(sound, "To Harmonicity (cc)", time_step, min_F0, sil_threshold, 1)
     mean_hnr = call(harmonicity, "Get mean", 0, 0)
+    del harmonicity
 
     print("      -> Extracting Formants...")
     formant = call(sound, "To Formant (burg)", time_step_f, max_num_formants,
@@ -674,11 +696,15 @@ def analyze_cow(audio_file_path, call_type, methods, filter_cfg):
     formant_tier = call(formant, "Down to FormantTier")
     table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
     f_means = _formant_means(table_f, 8)
+    del formant, formant_tier, table_f
 
     disp = get_dispersion(methods["dispersion"], f_means)
     vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
 
     print("      -> Calculating Wiener Entropy...")
+    # Only `sound` is needed from here; reclaim everything else first so the
+    # long per-frame Wiener loop runs with a minimal resident set.
+    gc.collect()
     we = get_wiener_entropy(methods["wiener"], sound, 50, q75, 0.004)
 
     return {
