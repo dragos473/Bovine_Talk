@@ -1040,7 +1040,8 @@ def _run_resilient(task_args, timeout, retries, debug=False):
 
 def process_directory(input_dir, output_csv, animal_type, call_type,
                       methods, filter_cfg, max_duration=None, isolate=False,
-                      mem_report=False, timeout=None, retries=10, debug=False):
+                      mem_report=False, timeout=None, retries=10, debug=False,
+                      append=False):
     supported_extensions = (".wav", ".aif", ".aiff", ".au")
 
     if not os.path.isdir(input_dir):
@@ -1108,14 +1109,20 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
         print("\nAll files were skipped. No output generated.")
         return
 
-    # Aggregate in a DataFrame (as required). The exported header labels carry
-    # leading spaces in the legacy macros (e.g. " Mean F0 (Hz)"), so values are
-    # matched to header columns by their stripped name.
-    ordered_keys = [c.strip() for c in columns]
-    df = pd.DataFrame(results).reindex(columns=ordered_keys)
+    # In append mode, keep the existing rows and add this run's rows under the
+    # same header (written only if the file is new/empty). Otherwise overwrite.
+    file_exists = os.path.exists(output_csv) and os.path.getsize(output_csv) > 0
+    appending = append and file_exists
+    if appending:
+        with open(output_csv, "r", newline="") as fh:
+            existing_header = fh.readline().rstrip("\n")
+        if existing_header != header:
+            print("   [!] --append: existing file's header differs from this run's "
+                  "columns; rows may not line up. Appending anyway.")
 
-    with open(output_csv, "w", newline="") as fh:
-        fh.write(header + "\n")
+    with open(output_csv, "a" if appending else "w", newline="") as fh:
+        if not appending:
+            fh.write(header + "\n")
         for record in results:
             fields = []
             for col in columns:
@@ -1123,10 +1130,11 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
                 fields.append("" if value is None else str(value))
             fh.write(",".join(fields) + ",\n")  # trailing comma == empty Column1
 
+    # Regenerate the XLSX sidecar from the full CSV so it reflects appended rows.
     if output_csv.lower().endswith(".csv"):
         xlsx_path = os.path.splitext(output_csv)[0] + ".xlsx"
         try:
-            df.to_excel(xlsx_path, index=False)
+            pd.read_csv(output_csv).to_excel(xlsx_path, index=False)
             print(f"   Also wrote spreadsheet: {xlsx_path}")
         except ImportError:
             print("   [i] Skipped XLSX sidecar (optional): run 'pip install openpyxl' "
@@ -1134,7 +1142,8 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
         except Exception as e:
             print(f"   [!] Could not write XLSX ({e})")
 
-    print(f"\nFinished! Processed {len(results)} files. Output written to '{output_csv}'")
+    verb = "appended to" if appending else "written to"
+    print(f"\nFinished! Processed {len(results)} files. Output {verb} '{output_csv}'")
 
 
 def main():
@@ -1194,6 +1203,10 @@ def main():
                         help="Print the native traceback (faulthandler) when a worker "
                              "crashes. Off by default -- crashes are reported as a "
                              "concise one-line message and simply retried.")
+    parser.add_argument("--append", action="store_true",
+                        help="Append this run's rows to the output file instead of "
+                             "overwriting it (the header is written only when the file "
+                             "is new). Default: overwrite.")
 
     # Diagnostic bisection: skip a stage to locate a native crash and still get
     # every other metric. Skipped columns are written as --undefined--.
@@ -1231,7 +1244,8 @@ def main():
     process_directory(args.input_dir, args.output, args.animal, args.call_type,
                       methods, filter_cfg, max_duration=args.max_duration,
                       isolate=args.isolate, mem_report=args.mem_report,
-                      timeout=args.timeout, retries=args.retries, debug=args.debug)
+                      timeout=args.timeout, retries=args.retries, debug=args.debug,
+                      append=args.append)
 
 
 if __name__ == "__main__":
