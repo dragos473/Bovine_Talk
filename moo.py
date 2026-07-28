@@ -953,20 +953,21 @@ def _analyze_one(filename, input_dir, animal_type, call_type, methods,
         gc.collect()
 
 
-def _isolated_entry(queue, *task_args):
+def _isolated_entry(queue, debug, *task_args):
     """Subprocess wrapper: run one analysis and post its result + peak RSS."""
-    # Print each stage immediately (so the last line before a native crash is
-    # accurate) and dump a native traceback if the C engine segfaults.
+    # Print each stage immediately so the last line before a native crash is
+    # accurate; only dump a native traceback on a C-level crash in debug mode.
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
-    faulthandler.enable()
+    if debug:
+        faulthandler.enable()
     result = _analyze_one(*task_args)
     queue.put((result, _peak_rss_mb()))
 
 
-def _run_isolated(task_args, timeout):
+def _run_isolated(task_args, timeout, debug=False):
     """Run one analysis in a fresh subprocess that exits afterwards.
 
     Guarantees the OS reclaims *all* of that file's memory before the next one
@@ -977,7 +978,7 @@ def _run_isolated(task_args, timeout):
     """
     ctx = mp.get_context("spawn")  # clean interpreter; full reclaim on exit
     queue = ctx.Queue()
-    proc = ctx.Process(target=_isolated_entry, args=(queue,) + tuple(task_args))
+    proc = ctx.Process(target=_isolated_entry, args=(queue, debug) + tuple(task_args))
     proc.start()
     proc.join(timeout)
     if proc.is_alive():
@@ -995,7 +996,7 @@ def _is_crash(result):
     return result[0] == "error" and "crashed" in (result[3] or "")
 
 
-def _run_resilient(task_args, timeout, retries):
+def _run_resilient(task_args, timeout, retries, debug=False):
     """Isolate-run a file, retrying native crashes to a successful full result.
 
     The parselmouth crash is nondeterministic (it depends on process heap
@@ -1011,7 +1012,7 @@ def _run_resilient(task_args, timeout, retries):
 
     # Tier 1: full analysis, retried in fresh processes.
     for attempt in range(1, retries + 1):
-        result, peak = _run_isolated(task_args, timeout)
+        result, peak = _run_isolated(task_args, timeout, debug)
         if not _is_crash(result):
             return result, peak, ""  # success, or a clean (non-crash) error
         if attempt < retries:
@@ -1031,7 +1032,7 @@ def _run_resilient(task_args, timeout, retries):
                       retry_methods, filter_cfg, max_duration)
         print(f"    -> {filename} still crashing after {retries} full attempts; "
               f"retrying with {note}...")
-        result, peak = _run_isolated(retry_args, timeout)
+        result, peak = _run_isolated(retry_args, timeout, debug)
         if result[0] == "ok":
             return result, peak, note
     return result, peak, ""
@@ -1039,7 +1040,7 @@ def _run_resilient(task_args, timeout, retries):
 
 def process_directory(input_dir, output_csv, animal_type, call_type,
                       methods, filter_cfg, max_duration=None, isolate=False,
-                      mem_report=False, timeout=None, retries=10):
+                      mem_report=False, timeout=None, retries=10, debug=False):
     supported_extensions = (".wav", ".aif", ".aiff", ".au")
 
     if not os.path.isdir(input_dir):
@@ -1070,7 +1071,7 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
             # Windows/parselmouth builds) kills only this child and is
             # nondeterministic, so retry the full analysis before degrading.
             result, child_peak, recovered_note = _run_resilient(
-                task_args, timeout, retries)
+                task_args, timeout, retries, debug)
         else:
             result, child_peak = _analyze_one(*task_args), _peak_rss_mb()
 
@@ -1189,6 +1190,10 @@ def main():
     parser.add_argument("--mem-report", action="store_true",
                         help="Print peak resident memory per file (with --isolate) or "
                              "cumulative peak (without), to identify heavy recordings.")
+    parser.add_argument("--debug", action="store_true",
+                        help="Print the native traceback (faulthandler) when a worker "
+                             "crashes. Off by default -- crashes are reported as a "
+                             "concise one-line message and simply retried.")
 
     # Diagnostic bisection: skip a stage to locate a native crash and still get
     # every other metric. Skipped columns are written as --undefined--.
@@ -1199,13 +1204,15 @@ def main():
 
     args = parser.parse_args()
 
-    # Flush each stage line immediately and dump a native traceback on a C-level
-    # crash, so an engine segfault is diagnosable rather than a silent exit.
+    # Flush each stage line immediately; only dump a native traceback on a
+    # C-level crash when --debug is set (otherwise crashes are reported concisely
+    # and retried).
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
-    faulthandler.enable()
+    if args.debug:
+        faulthandler.enable()
 
     methods = {
         "modulation": args.modulation_method,
@@ -1224,7 +1231,7 @@ def main():
     process_directory(args.input_dir, args.output, args.animal, args.call_type,
                       methods, filter_cfg, max_duration=args.max_duration,
                       isolate=args.isolate, mem_report=args.mem_report,
-                      timeout=args.timeout, retries=args.retries)
+                      timeout=args.timeout, retries=args.retries, debug=args.debug)
 
 
 if __name__ == "__main__":
