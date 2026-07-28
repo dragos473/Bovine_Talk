@@ -650,21 +650,29 @@ def analyze_calf(audio_file_path, methods, filter_cfg):
     mean_hnr = call(harmonicity, "Get mean", 0, 0)
     del harmonicity
 
-    print("      -> Extracting Formants...")
-    formant = call(sound, "To Formant (burg)", 0, 7, 4300, 0.01, 50)
-    formant_tier = call(formant, "Down to FormantTier")
-    table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
-    f_means = _formant_means(table_f, 6)
-    del formant, formant_tier, table_f
+    if methods.get("skip_formants"):
+        print("      -> Extracting Formants... (skipped)")
+        f_means = [np.nan] * 6
+        disp = vtl = np.nan
+    else:
+        print("      -> Extracting Formants...")
+        formant = call(sound, "To Formant (burg)", 0, 7, 4300, 0.01, 50)
+        formant_tier = call(formant, "Down to FormantTier")
+        table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
+        f_means = _formant_means(table_f, 6)
+        del formant, formant_tier, table_f
+        disp = get_dispersion(methods["dispersion"], f_means)
+        vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
 
-    disp = get_dispersion(methods["dispersion"], f_means)
-    vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
-
-    print("      -> Calculating Wiener Entropy...")
     # Only `sound` is needed from here; reclaim everything else first so the
     # long per-frame Wiener loop runs with a minimal resident set.
     gc.collect()
-    we = get_wiener_entropy(methods["wiener"], sound, 70, q75, 0.01)
+    if methods.get("skip_wiener"):
+        print("      -> Calculating Wiener Entropy... (skipped)")
+        we = np.nan
+    else:
+        print("      -> Calculating Wiener Entropy...")
+        we = get_wiener_entropy(methods["wiener"], sound, 70, q75, 0.01)
 
     return {
         "Mean F0 (Hz)": f0["mean"], "Start F0 (Hz)": f0["start"], "End F0 (Hz)": f0["end"],
@@ -728,22 +736,30 @@ def analyze_cow(audio_file_path, call_type, methods, filter_cfg):
     mean_hnr = call(harmonicity, "Get mean", 0, 0)
     del harmonicity
 
-    print("      -> Extracting Formants...")
-    formant = call(sound, "To Formant (burg)", time_step_f, max_num_formants,
-                   max_formant, window_length, pre_emphasis)
-    formant_tier = call(formant, "Down to FormantTier")
-    table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
-    f_means = _formant_means(table_f, 8)
-    del formant, formant_tier, table_f
+    if methods.get("skip_formants"):
+        print("      -> Extracting Formants... (skipped)")
+        f_means = [np.nan] * 8
+        disp = vtl = np.nan
+    else:
+        print("      -> Extracting Formants...")
+        formant = call(sound, "To Formant (burg)", time_step_f, max_num_formants,
+                       max_formant, window_length, pre_emphasis)
+        formant_tier = call(formant, "Down to FormantTier")
+        table_f = call(formant_tier, "Down to TableOfReal", "yes", "no")
+        f_means = _formant_means(table_f, 8)
+        del formant, formant_tier, table_f
+        disp = get_dispersion(methods["dispersion"], f_means)
+        vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
 
-    disp = get_dispersion(methods["dispersion"], f_means)
-    vtl = 35000 / (2 * disp) if disp and not math.isnan(disp) and disp != 0 else np.nan
-
-    print("      -> Calculating Wiener Entropy...")
     # Only `sound` is needed from here; reclaim everything else first so the
     # long per-frame Wiener loop runs with a minimal resident set.
     gc.collect()
-    we = get_wiener_entropy(methods["wiener"], sound, 50, q75, 0.004)
+    if methods.get("skip_wiener"):
+        print("      -> Calculating Wiener Entropy... (skipped)")
+        we = np.nan
+    else:
+        print("      -> Calculating Wiener Entropy...")
+        we = get_wiener_entropy(methods["wiener"], sound, 50, q75, 0.004)
 
     return {
         "Call type": call_type, "Mean F0": f0["mean"], "Max F0": f0["max"],
@@ -872,13 +888,43 @@ def _probe_duration(path):
 
 
 def _peak_rss_mb():
-    """Current process peak resident set size in MB (None if unavailable)."""
-    if resource is None:
-        return None
-    # ru_maxrss is KB on Linux, bytes on macOS.
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    import sys
-    return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+    """Current process peak resident memory in MB (None if unavailable).
+
+    Uses POSIX ``resource`` where present, and the Win32 ``GetProcessMemoryInfo``
+    peak working set on Windows (the Unix-only ``resource`` module is why
+    ``--mem-report`` printed nothing there before).
+    """
+    if resource is not None:
+        # ru_maxrss is KB on Linux, bytes on macOS.
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _PMC(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = _PMC()
+            counters.cb = ctypes.sizeof(counters)
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            if ctypes.windll.psapi.GetProcessMemoryInfo(
+                    handle, ctypes.byref(counters), counters.cb):
+                return counters.PeakWorkingSetSize / (1024 * 1024)
+        except Exception:
+            return None
+    return None
 
 
 def _analyze_one(filename, input_dir, animal_type, call_type, methods,
@@ -1079,6 +1125,13 @@ def main():
                         help="Print peak resident memory per file (with --isolate) or "
                              "cumulative peak (without), to identify heavy recordings.")
 
+    # Diagnostic bisection: skip a stage to locate a native crash and still get
+    # every other metric. Skipped columns are written as --undefined--.
+    parser.add_argument("--skip-wiener", action="store_true",
+                        help="Skip Wiener-entropy computation (diagnostic/workaround).")
+    parser.add_argument("--skip-formants", action="store_true",
+                        help="Skip formant analysis (diagnostic/workaround).")
+
     args = parser.parse_args()
 
     # Flush each stage line immediately and dump a native traceback on a C-level
@@ -1093,6 +1146,8 @@ def main():
         "modulation": args.modulation_method,
         "wiener": args.wiener_method,
         "dispersion": args.dispersion_method,
+        "skip_wiener": args.skip_wiener,
+        "skip_formants": args.skip_formants,
     }
     filter_cfg = {
         "enabled": not args.no_filter,
