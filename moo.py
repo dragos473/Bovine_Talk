@@ -1018,8 +1018,30 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
         print(f"[{index}/{total_files}] Processing {filename}...")
         task_args = (filename, input_dir, animal_type, call_type, methods,
                      filter_cfg, max_duration)
+        recovered_note = ""
         if isolate:
             result, child_peak = _run_isolated(task_args, timeout)
+            # A native engine crash (e.g. the To Formant (burg) segfault seen on
+            # some Windows/parselmouth builds) kills only this child. Retry the
+            # file with the heavy native stages progressively skipped so it still
+            # yields every other metric instead of being dropped entirely.
+            crashed = result[0] == "error" and "crashed" in (result[3] or "")
+            if crashed and not (methods.get("skip_formants")
+                                and methods.get("skip_wiener")):
+                for skip in ({"skip_formants": True},
+                             {"skip_formants": True, "skip_wiener": True}):
+                    retry_methods = {**methods, **skip}
+                    retry_args = (filename, input_dir, animal_type, call_type,
+                                  retry_methods, filter_cfg, max_duration)
+                    print(f"    -> {filename} crashed in a native stage; "
+                          f"retrying with {'/'.join(sorted(skip))}...")
+                    result, child_peak = _run_isolated(retry_args, timeout)
+                    if result[0] == "ok":
+                        result = ("ok", result[1], result[2], None)
+                        recovered_note = " + ".join(
+                            s.replace("skip_", "").rstrip("s") + " skipped"
+                            for s in sorted(skip))
+                        break
         else:
             result, child_peak = _analyze_one(*task_args), _peak_rss_mb()
 
@@ -1027,11 +1049,19 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
         if status == "ok":
             row = _format_row(fname, metrics, precision)
             # Comment column mirrors the manual annotation; flagged when the
-            # automated outlier filter removed frames.
+            # automated outlier filter removed frames, and notes any native
+            # stage skipped to recover the file from a crash.
             removed = metrics.get("_f0_removed_frames", 0)
-            row["Comment"] = "unvoiced" if removed > 0 else ""
+            parts = []
+            if removed > 0:
+                parts.append("unvoiced")
+            if recovered_note:
+                parts.append(f"engine crash: {recovered_note}")
+            row["Comment"] = "; ".join(parts)
             results.append(row)
-            msg = f"    -> Successfully processed {fname} ({removed} F0 frame(s) filtered)"
+            suffix = f" [recovered: {recovered_note}]" if recovered_note else ""
+            msg = (f"    -> Successfully processed {fname} "
+                   f"({removed} F0 frame(s) filtered){suffix}")
         elif status == "skip":
             msg = f"    -> Skipped {fname} ({info})"
         else:
