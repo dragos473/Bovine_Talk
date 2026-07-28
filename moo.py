@@ -991,9 +991,55 @@ def _run_isolated(task_args, timeout):
             f"worker crashed ({_describe_exit(proc.exitcode)})"), None
 
 
+def _is_crash(result):
+    return result[0] == "error" and "crashed" in (result[3] or "")
+
+
+def _run_resilient(task_args, timeout, retries):
+    """Isolate-run a file, retrying native crashes to a successful full result.
+
+    The parselmouth crash is nondeterministic (it depends on process heap
+    layout, which the OS randomizes), so simply re-running the *full* analysis in
+    a fresh process usually succeeds on a later attempt. We therefore retry the
+    complete analysis up to ``retries`` times and only if every full attempt
+    still crashes do we fall back to skipping the offending native stage, so the
+    file always completes -- with formants whenever a lucky run produced them.
+
+    Returns ``(result, child_peak, recovered_note)``.
+    """
+    filename, input_dir, animal_type, call_type, methods, filter_cfg, max_duration = task_args
+
+    # Tier 1: full analysis, retried in fresh processes.
+    for attempt in range(1, retries + 1):
+        result, peak = _run_isolated(task_args, timeout)
+        if not _is_crash(result):
+            return result, peak, ""  # success, or a clean (non-crash) error
+        if attempt < retries:
+            print(f"    -> {filename} crashed in a native stage "
+                  f"(attempt {attempt}/{retries}); retrying full analysis...")
+
+    # Tier 2: still crashing after every full attempt -- salvage the file by
+    # skipping the offending stage(s) so at least the other metrics are kept.
+    fallbacks = [({"skip_formants": True}, "formants skipped"),
+                 ({"skip_formants": True, "skip_wiener": True},
+                  "formants + wiener skipped")]
+    for skip, note in fallbacks:
+        if all(methods.get(k) for k in skip):
+            continue
+        retry_methods = {**methods, **skip}
+        retry_args = (filename, input_dir, animal_type, call_type,
+                      retry_methods, filter_cfg, max_duration)
+        print(f"    -> {filename} still crashing after {retries} full attempts; "
+              f"retrying with {note}...")
+        result, peak = _run_isolated(retry_args, timeout)
+        if result[0] == "ok":
+            return result, peak, note
+    return result, peak, ""
+
+
 def process_directory(input_dir, output_csv, animal_type, call_type,
                       methods, filter_cfg, max_duration=None, isolate=False,
-                      mem_report=False, timeout=None):
+                      mem_report=False, timeout=None, retries=10):
     supported_extensions = (".wav", ".aif", ".aiff", ".au")
 
     if not os.path.isdir(input_dir):
@@ -1020,28 +1066,11 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
                      filter_cfg, max_duration)
         recovered_note = ""
         if isolate:
-            result, child_peak = _run_isolated(task_args, timeout)
-            # A native engine crash (e.g. the To Formant (burg) segfault seen on
-            # some Windows/parselmouth builds) kills only this child. Retry the
-            # file with the heavy native stages progressively skipped so it still
-            # yields every other metric instead of being dropped entirely.
-            crashed = result[0] == "error" and "crashed" in (result[3] or "")
-            if crashed and not (methods.get("skip_formants")
-                                and methods.get("skip_wiener")):
-                for skip in ({"skip_formants": True},
-                             {"skip_formants": True, "skip_wiener": True}):
-                    retry_methods = {**methods, **skip}
-                    retry_args = (filename, input_dir, animal_type, call_type,
-                                  retry_methods, filter_cfg, max_duration)
-                    print(f"    -> {filename} crashed in a native stage; "
-                          f"retrying with {'/'.join(sorted(skip))}...")
-                    result, child_peak = _run_isolated(retry_args, timeout)
-                    if result[0] == "ok":
-                        result = ("ok", result[1], result[2], None)
-                        recovered_note = " + ".join(
-                            s.replace("skip_", "").rstrip("s") + " skipped"
-                            for s in sorted(skip))
-                        break
+            # A native engine crash (e.g. the To Formant (burg) segfault on some
+            # Windows/parselmouth builds) kills only this child and is
+            # nondeterministic, so retry the full analysis before degrading.
+            result, child_peak, recovered_note = _run_resilient(
+                task_args, timeout, retries)
         else:
             result, child_peak = _analyze_one(*task_args), _peak_rss_mb()
 
@@ -1151,6 +1180,12 @@ def main():
     parser.add_argument("--timeout", type=float, default=None,
                         help="Per-file time limit in seconds (--isolate only). A file "
                              "exceeding it is terminated and skipped. Default: none.")
+    parser.add_argument("--retries", type=int, default=10,
+                        help="With --isolate, how many times to re-run a file's full "
+                             "analysis after a native engine crash before falling back "
+                             "to skipping the offending stage. The crash is "
+                             "nondeterministic, so more retries recover more files fully. "
+                             "Default 10.")
     parser.add_argument("--mem-report", action="store_true",
                         help="Print peak resident memory per file (with --isolate) or "
                              "cumulative peak (without), to identify heavy recordings.")
@@ -1189,7 +1224,7 @@ def main():
     process_directory(args.input_dir, args.output, args.animal, args.call_type,
                       methods, filter_cfg, max_duration=args.max_duration,
                       isolate=args.isolate, mem_report=args.mem_report,
-                      timeout=args.timeout)
+                      timeout=args.timeout, retries=args.retries)
 
 
 if __name__ == "__main__":
