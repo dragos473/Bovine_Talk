@@ -32,9 +32,11 @@ import argparse
 import contextlib
 import faulthandler
 import gc
+import glob
 import math
 import multiprocessing as mp
 import os
+import re
 import signal
 import sys
 import wave
@@ -1038,6 +1040,89 @@ def _run_resilient(task_args, timeout, retries, debug=False):
     return result, peak, ""
 
 
+def _file_index(filename):
+    """The trailing integer in a filename (HFC_10.wav -> 10); None if absent."""
+    nums = re.findall(r"\d+", os.path.splitext(filename)[0])
+    return int(nums[-1]) if nums else None
+
+
+def _load_tsv_timestamps(output_csv, call_type):
+    """Load the per-call Duration/Start timestamps for this run's vocalization type.
+
+    Looks in the output file's directory for a ``*.tsv`` (name is not fixed),
+    keeps only rows whose ``text`` equals ``call_type`` (LFC/HFC), and returns
+    them in file order as a list of ``(tsec, Ora_Muget)`` tuples -- the k-th
+    entry is the k-th call of that type, mapped downstream to ``<TYPE>_k``.
+
+    Returns ``None`` (and prints why) when no usable TSV is present, so the
+    caller simply omits the two extra columns and continues.
+    """
+    out_dir = os.path.dirname(os.path.abspath(output_csv)) or "."
+    tsv_files = sorted(glob.glob(os.path.join(out_dir, "*.tsv")))
+    if not tsv_files:
+        print(f"   [!] No .tsv file found in '{out_dir}'; "
+              "skipping the Duration(s)/Start columns.")
+        return None
+
+    tsv_path = tsv_files[0]
+    try:
+        table = pd.read_csv(tsv_path, sep="\t")
+    except Exception as e:
+        print(f"   [!] Could not read TSV '{tsv_path}' ({e}); "
+              "skipping the Duration(s)/Start columns.")
+        return None
+
+    cols = {c.lower().strip(): c for c in table.columns}
+    if not {"text", "tsec", "ora_muget"} <= cols.keys():
+        print(f"   [!] TSV '{os.path.basename(tsv_path)}' lacks the expected "
+              "text/tsec/Ora_Muget columns; skipping the Duration(s)/Start columns.")
+        return None
+
+    text_c, tsec_c, ora_c = cols["text"], cols["tsec"], cols["ora_muget"]
+    subset = table[table[text_c].astype(str).str.strip().str.upper()
+                   == call_type.upper()]
+    mapping = []
+    for _, r in subset.iterrows():
+        try:
+            tsec = float(r[tsec_c])
+        except (TypeError, ValueError):
+            tsec = np.nan
+        ora = "" if pd.isna(r[ora_c]) else str(r[ora_c]).strip()
+        mapping.append((tsec, ora))
+
+    print(f"   [i] TSV '{os.path.basename(tsv_path)}': {len(mapping)} '{call_type}' "
+          f"row(s) available for Duration(s)/Start.")
+    return mapping
+
+
+def _add_timestamp_columns(results, output_csv, call_type):
+    """Append Duration(s)/Start to each result row from the session TSV.
+
+    Returns the list of extra column names (empty if no TSV was usable). Rows
+    whose file index has no matching TSV entry get blank values.
+    """
+    mapping = _load_tsv_timestamps(output_csv, call_type)
+    if mapping is None:
+        return []
+
+    matched = 0
+    for row in results:
+        idx = _file_index(row["file"])
+        if idx is not None and 1 <= idx <= len(mapping):
+            tsec, ora = mapping[idx - 1]
+            row["Duration(s)"] = "" if math.isnan(tsec) else f"{tsec:.3f}"
+            row["Start"] = ora
+            matched += 1
+        else:
+            row["Duration(s)"] = ""
+            row["Start"] = ""
+
+    if matched < len(results):
+        print(f"   [!] Only {matched}/{len(results)} rows matched a TSV timestamp "
+              f"(count mismatch); the rest have blank Duration(s)/Start.")
+    return ["Duration(s)", "Start"]
+
+
 def process_directory(input_dir, output_csv, animal_type, call_type,
                       methods, filter_cfg, max_duration=None, isolate=False,
                       mem_report=False, timeout=None, retries=10, debug=False,
@@ -1109,6 +1194,12 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
         print("\nAll files were skipped. No output generated.")
         return
 
+    # Optional Duration(s)/Start columns, mapped from a session TSV in the output
+    # directory. Appended last; absent TSV -> columns omitted, run continues.
+    extra_columns = _add_timestamp_columns(results, output_csv, call_type)
+    full_header = header + ",".join(extra_columns) + "," if extra_columns else header
+    write_columns = columns + extra_columns
+
     # In append mode, keep the existing rows and add this run's rows under the
     # same header (written only if the file is new/empty). Otherwise overwrite.
     file_exists = os.path.exists(output_csv) and os.path.getsize(output_csv) > 0
@@ -1116,16 +1207,16 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
     if appending:
         with open(output_csv, "r", newline="") as fh:
             existing_header = fh.readline().rstrip("\n")
-        if existing_header != header:
+        if existing_header != full_header:
             print("   [!] --append: existing file's header differs from this run's "
                   "columns; rows may not line up. Appending anyway.")
 
     with open(output_csv, "a" if appending else "w", newline="") as fh:
         if not appending:
-            fh.write(header + "\n")
+            fh.write(full_header + "\n")
         for record in results:
             fields = []
-            for col in columns:
+            for col in write_columns:
                 value = record.get(col.strip(), "")
                 fields.append("" if value is None else str(value))
             fh.write(",".join(fields) + ",\n")  # trailing comma == empty Column1
