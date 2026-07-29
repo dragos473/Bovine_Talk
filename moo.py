@@ -1197,8 +1197,10 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
     # Optional Duration(s)/Start columns, mapped from a session TSV in the output
     # directory. Appended last; absent TSV -> columns omitted, run continues.
     extra_columns = _add_timestamp_columns(results, output_csv, call_type)
-    full_header = header + ",".join(extra_columns) + "," if extra_columns else header
-    write_columns = columns + extra_columns
+    # The legacy header ends with a comma (a trailing empty "Column1"); drop it so
+    # the CSV/XLSX have no stray unnamed last column, then append the real extras.
+    write_columns = [c for c in columns if c.strip()] + extra_columns
+    header_line = ",".join(write_columns)
 
     # In append mode, keep the existing rows and add this run's rows under the
     # same header (written only if the file is new/empty). Otherwise overwrite.
@@ -1207,19 +1209,19 @@ def process_directory(input_dir, output_csv, animal_type, call_type,
     if appending:
         with open(output_csv, "r", newline="") as fh:
             existing_header = fh.readline().rstrip("\n")
-        if existing_header != full_header:
+        if existing_header != header_line:
             print("   [!] --append: existing file's header differs from this run's "
                   "columns; rows may not line up. Appending anyway.")
 
     with open(output_csv, "a" if appending else "w", newline="") as fh:
         if not appending:
-            fh.write(full_header + "\n")
+            fh.write(header_line + "\n")
         for record in results:
             fields = []
             for col in write_columns:
                 value = record.get(col.strip(), "")
                 fields.append("" if value is None else str(value))
-            fh.write(",".join(fields) + ",\n")  # trailing comma == empty Column1
+            fh.write(",".join(fields) + "\n")
 
     # Regenerate the XLSX sidecar from the full CSV so it reflects appended rows.
     if output_csv.lower().endswith(".csv"):
