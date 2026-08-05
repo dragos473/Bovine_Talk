@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Documentație — moo.py · analiză acustică a vocalizărilor bovine</title>
-<meta name="description" content="Documentație în română pentru moo.py: scop, utilizare, argumente CLI, curățarea anomaliilor F0 și referință pentru dezvoltatori.">
+<title>Documentație — bovine_acoustics.py · analiză acustică a vocalizărilor bovine</title>
+<meta name="description" content="Documentație în română pentru bovine_acoustics.py: scop, utilizare, argumente CLI, curățarea anomaliilor F0 și referință pentru developeri.">
 </head>
 <body>
 <style>
@@ -204,7 +204,7 @@
   }
   .note.warn .nl{color:var(--spike);}
 
-  /* cards for faithful/optimized + dev groups */
+  /* cards for faithful/experimental + dev groups */
   .cards{display:grid; gap:1rem; grid-template-columns:1fr; margin:1.1rem 0;}
   @media (min-width:640px){.cards.three{grid-template-columns:repeat(3,1fr);} .cards.two{grid-template-columns:1fr 1fr;}}
   .card{
@@ -244,13 +244,13 @@
 <div class="doc">
   <header class="hero">
     <div class="hero-wrap">
-      <p class="eyebrow">Documentație · analiză acustică · Praat → Python</p>
-      <h1>Vocalizări bovine, măsurate <em>reproductibil</em>.</h1>
+      <p class="eyebrow">Documentație internă · unealtă de cercetare</p>
+      <h1>Analiza acustică a vocalizărilor bovine</h1>
       <p class="lede">
-        <code>moo.py</code> parcurge un director de înregistrări, curăță automat
-        anomaliile din conturul de frecvență fundamentală și exportă un set complet
-        de parametri acustici — o reimplementare fidelă în Python a fluxului manual
-        din Praat.
+        <code>bovine_acoustics.py</code> este o unealtă internă de cercetare. Parcurge un
+        director de înregistrări, curăță automat anomaliile din conturul de frecvență
+        fundamentală (F0) și exportă parametrii acustici pentru fiecare vocalizare —
+        reimplementare în Python a fluxului manual din Praat. Nu este un produs.
       </p>
       <div class="motif" aria-label="Contur F0 cu o secvență anormală eliminată">
         <canvas id="f0canvas" width="1040" height="260"></canvas>
@@ -274,14 +274,14 @@
         <li><a href="#argumente"><span>Argumentele liniei de comandă</span></a></li>
         <li><a href="#iesire"><span>Structura fișierului de ieșire</span></a></li>
         <li><a href="#f0"><span>Curățarea anomaliilor F0</span></a></li>
-        <li><a href="#dual"><span>faithful vs optimized</span></a></li>
+        <li><a href="#dual"><span>faithful vs experimental</span></a></li>
         <li><a href="#tsv"><span>Coloanele Duration(s) și Start</span></a></li>
         <li><a href="#robust"><span>Rulare robustă</span></a></li>
         <li><a href="#depanare"><span>Depanare</span></a></li>
         <li><a href="#validare"><span>Validare (compare.py)</span></a></li>
         <li><a href="#exemple"><span>Exemple uzuale</span></a></li>
         <li><a href="#limitari"><span>Note și limitări</span></a></li>
-        <li><a href="#dev"><span>Pentru dezvoltatori</span></a></li>
+        <li><a href="#dev"><span>Pentru developeri</span></a></li>
       </ol>
     </nav>
 
@@ -346,18 +346,21 @@
       <section class="sec" id="utilizare">
         <p class="sec-no">§04</p>
         <h2>Utilizare de bază</h2>
-        <p>Scriptul procesează <strong>un director</strong> odată (extensii: <code>.wav</code>,
-          <code>.aif</code>, <code>.aiff</code>, <code>.au</code>).</p>
+        <p>Scriptul procesează <strong>un director</strong> odată. Sunt suportate extensiile
+          <code>.wav</code>, <code>.aif</code>, <code>.aiff</code> și <code>.au</code>, însă
+          <strong>recomandarea puternică este <code>.wav</code></strong> (formatul pe care a fost
+          testat și validat scriptul).</p>
         <p class="cmd-label">Viței</p>
-        <pre><code>python moo.py <span class="f">-i</span> cale/catre/director <span class="f">-o</span> rezultate.csv <span class="f">-a</span> calf</code></pre>
-        <p class="cmd-label">Vaci — cu tipul de vocalizare</p>
-        <pre><code>python moo.py <span class="f">-i</span> director <span class="f">-o</span> rezultate.csv <span class="f">-a</span> cow <span class="f">-c</span> HFC</code></pre>
+        <pre><code>python bovine_acoustics.py <span class="f">-i</span> director <span class="f">-o</span> rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC</code></pre>
+        <p class="cmd-label">Vaci</p>
+        <pre><code>python bovine_acoustics.py <span class="f">-i</span> director <span class="f">-o</span> rezultate.csv <span class="f">-a</span> cow <span class="f">-c</span> HFC</code></pre>
         <div class="note">
-          <span class="nl">Notă despre -c la viței</span>
-          Analiza pentru viței folosește parametri ficși (nu depinde de LFC/HFC), dar valoarea
-          <code>-c</code> este folosită pentru a selecta tipul corect din fișierul <code>.tsv</code>
-          (vezi §09). Când rulați pe un folder HFC, treceți <code>-c HFC</code> chiar și pentru
-          <code>-a calf</code>.
+          <span class="nl">Notă despre -c</span>
+          <code>-c/--call-type</code> este <strong>obligatoriu</strong> la orice rulare
+          (<code>LFC</code> sau <code>HFC</code>). La viței analiza folosește parametri ficși, dar
+          <code>-c</code> este folosit oricum pentru a selecta tipul corect din fișierul
+          <code>.tsv</code> (vezi §09) — deci treceți <code>-c HFC</code> chiar și pentru
+          <code>-a calf</code> pe un folder HFC.
         </div>
       </section>
 
@@ -371,8 +374,8 @@
               <tr><td><code>-i</code>, <code>--input_dir</code></td><td class="def">obligatoriu</td><td>Directorul cu fișierele audio.</td></tr>
               <tr><td><code>-o</code>, <code>--output</code></td><td class="def">obligatoriu</td><td>Calea fișierului <code>.csv</code> de ieșire.</td></tr>
               <tr><td><code>-a</code>, <code>--animal</code></td><td class="def">obligatoriu</td><td><code>calf</code> (vițel) sau <code>cow</code> (vacă).</td></tr>
-              <tr><td><code>-c</code>, <code>--call_type</code></td><td class="def">LFC</td><td>Tipul vocalizării: <code>LFC</code> sau <code>HFC</code>.</td></tr>
-              <tr><td><code>--modulation-method</code></td><td class="def">faithful</td><td><code>faithful</code> (identic Praat) sau <code>optimized</code>.</td></tr>
+              <tr><td><code>-c</code>, <code>--call-type</code></td><td class="def">obligatoriu</td><td>Tipul vocalizării: <code>LFC</code> sau <code>HFC</code>. Fără valoare implicită.</td></tr>
+              <tr><td><code>--modulation-method</code></td><td class="def">faithful</td><td><code>faithful</code> (identic Praat) sau <code>experimental</code> (de validat).</td></tr>
               <tr><td><code>--wiener-method</code></td><td class="def">faithful</td><td>idem, pentru entropia Wiener.</td></tr>
               <tr><td><code>--dispersion-method</code></td><td class="def">faithful</td><td>idem, pentru dispersia formanților.</td></tr>
               <tr><td><code>--no-filter</code></td><td class="def">dezactivat</td><td>Oprește curățarea automată a anomaliilor F0.</td></tr>
@@ -449,29 +452,37 @@ formant dispersal (Hz), vocal tract length (cm), mean wiener entropy, Comment</c
 
       <section class="sec" id="dual">
         <p class="sec-no">§08</p>
-        <h2>Implementări duble: <code>faithful</code> vs <code>optimized</code></h2>
+        <h2>Implementări duble: <code>faithful</code> vs <code>experimental</code></h2>
         <p>
           Acolo unde macro-urile Praat conțin o particularitate matematică, scriptul oferă două
-          variante (implicit <code>faithful</code> peste tot, pentru a corespunde exact rezultatelor vechi):
+          variante (implicit <code>faithful</code> peste tot). <strong><code>faithful</code></strong>
+          reproduce exact matematica Praat (identic cu foile istorice) — <strong>aceasta trebuie
+          folosită</strong>. <strong><code>experimental</code></strong> este o versiune corectată
+          matematic, dar încă nevalidată.
         </p>
+        <div class="note warn">
+          <span class="nl">De reținut</span>
+          Variantele <code>experimental</code> <strong>trebuie validate de un expert din domeniu</strong>
+          înainte de a fi folosite în analize. Până atunci, folosiți <code>faithful</code>.
+        </div>
         <div class="cards three">
           <div class="card">
             <span class="tag">--modulation-method</span>
             <h4>Modulație F0 / intensitate</h4>
             <p><span class="v">faithful:</span> reproduce bucla Praat, inclusiv particularitatea de indexare (limita din <code>PitchTier</code>, indexarea cadrelor), cu alinierea corectă 0-based ↔ 1-based.</p>
-            <p><span class="v">optimized:</span> variantă vectorizată pe tot conturul valid.</p>
+            <p><span class="v">experimental:</span> variantă vectorizată pe tot conturul valid.</p>
           </div>
           <div class="card">
             <span class="tag">--wiener-method</span>
             <h4>Entropie Wiener</h4>
             <p><span class="v">faithful:</span> reproduce <code>To Spectrum (dft)</code> și particularitatea de indexare a matricei de putere (rezultat identic cu referința).</p>
-            <p><span class="v">optimized:</span> binii reali din bandă + medie geometrică corectă numeric (doar binii pozitivi).</p>
+            <p><span class="v">experimental:</span> binii reali din bandă + medie geometrică corectă numeric (doar binii pozitivi).</p>
           </div>
           <div class="card">
             <span class="tag">--dispersion-method</span>
             <h4>Dispersia formanților</h4>
             <p><span class="v">faithful:</span> media distanțelor consecutive dintre formanți (formula telescopică Praat).</p>
-            <p><span class="v">optimized:</span> panta prin regresie liniară pe (indice formant, frecvență) — folosește toți formanții.</p>
+            <p><span class="v">experimental:</span> panta prin regresie liniară pe (indice formant, frecvență) — folosește toți formanții.</p>
           </div>
         </div>
       </section>
@@ -484,6 +495,12 @@ formant dispersal (Hz), vocal tract length (cm), mean wiener entropy, Comment</c
           (numele nu contează — se caută primul <code>*.tsv</code>), scriptul adaugă la final două coloane
           preluate din el. Structura așteptată (separat prin TAB):
         </p>
+        <div class="note">
+          <span class="nl">Sursa fișierului .tsv</span>
+          Acest fișier nu este creat de acest script — el este rezultatul unui <strong>alt script
+          intern, aplicat direct în Praat</strong>, care exportă intervalele adnotate (momentul și
+          durata fiecărei vocalizări).
+        </div>
         <pre><code>tmin      tier      text   tmax        tsec        Ora_Muget
 9.265731  8_00_6    HFC    10.300537   1.034805... 08:41:29
 ...</code></pre>
@@ -525,7 +542,7 @@ formant dispersal (Hz), vocal tract length (cm), mean wiener entropy, Comment</c
           problematică (coloanele rămân <code>--undefined--</code>, iar <code>Comment</code> notează recuperarea).
         </p>
         <pre><code><span class="c"># timpul nu contează → recuperare cvasi-sigură cu formanți</span>
-python moo.py <span class="f">-i</span> .\HFC\ <span class="f">-o</span> rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--retries</span> <span class="s">50</span></code></pre>
+python bovine_acoustics.py <span class="f">-i</span> .\HFC\ <span class="f">-o</span> rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--retries</span> <span class="s">50</span></code></pre>
         <h3><code>--max-duration</code> — protecție împotriva fișierelor lungi</h3>
         <p>Sare peste orice înregistrare mai lungă de N secunde, verificând durata din antetul <code>.wav</code> <strong>înainte</strong> de a o încărca în memorie.</p>
       </section>
@@ -539,7 +556,7 @@ python moo.py <span class="f">-i</span> .\HFC\ <span class="f">-o</span> rezulta
           <li><strong><code>--skip-formants</code> / <code>--skip-wiener</code></strong> — sar peste o etapă nativă „grea”. Utile pentru a localiza etapa care provoacă un crash sau ca soluție de rezervă.</li>
         </ul>
         <pre><code><span class="c"># dacă --skip-formants elimină crash-urile, cauza e etapa de formanți</span>
-python moo.py <span class="f">-i</span> ... <span class="f">-o</span> ... <span class="f">-a</span> calf <span class="f">--isolate</span> <span class="f">--skip-formants</span></code></pre>
+python bovine_acoustics.py <span class="f">-i</span> ... <span class="f">-o</span> ... <span class="f">-a</span> calf <span class="f">--isolate</span> <span class="f">--skip-formants</span></code></pre>
       </section>
 
       <section class="sec" id="validare">
@@ -558,16 +575,16 @@ python moo.py <span class="f">-i</span> ... <span class="f">-o</span> ... <span 
         <p class="sec-no">§13</p>
         <h2>Exemple uzuale</h2>
         <pre><code><span class="c"># Vițel, folder LFC, cu tot ce e implicit (filtrare F0 activă)</span>
-python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\0000\out_LFC.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC
+python bovine_acoustics.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\0000\out_LFC.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC
 
 <span class="c"># Vițel, folder HFC, robust pe laptop</span>
-python moo.py <span class="f">-i</span> .\0000\HFC\ <span class="f">-o</span> .\0000\out_HFC.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--retries</span> <span class="s">50</span>
+python bovine_acoustics.py <span class="f">-i</span> .\0000\HFC\ <span class="f">-o</span> .\0000\out_HFC.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--retries</span> <span class="s">50</span>
 
 <span class="c"># Combinarea mai multor foldere într-un singur fișier</span>
-python moo.py <span class="f">-i</span> .\0001\HFC\ <span class="f">-o</span> .\rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--append</span>
+python bovine_acoustics.py <span class="f">-i</span> .\0001\HFC\ <span class="f">-o</span> .\rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--append</span>
 
 <span class="c"># Reproducerea exactă a rezultatelor vechi (fără filtrare)</span>
-python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\out.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC <span class="f">--no-filter</span></code></pre>
+python bovine_acoustics.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\out.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC <span class="f">--no-filter</span></code></pre>
       </section>
 
       <section class="sec" id="limitari">
@@ -583,9 +600,9 @@ python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\
 
       <section class="sec" id="dev">
         <p class="sec-no">§15 · referință tehnică</p>
-        <h2>Pentru dezvoltatori</h2>
+        <h2>Pentru developeri</h2>
         <p>
-          Scriptul este un singur modul, <code>moo.py</code>, fără stare globală: totul se transmite prin
+          Scriptul este un singur modul, <code>bovine_acoustics.py</code>, fără stare globală: totul se transmite prin
           argumente, astfel încât aceeași funcție de analiză rulează identic în proces sau într-un subproces izolat.
         </p>
 
@@ -616,7 +633,7 @@ python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\
             <h4>Pipeline &amp; metrici</h4>
             <p><code>analyze_calf</code> / <code>analyze_cow</code> — pipeline-ul complet; fiecare obiect Praat este eliberat imediat ce a fost citit (memorie minimă).</p>
             <p><code>_f0_block</code> — statistici F0 din pitch-ul netezit; aplică <code>apply_f0_filter</code> pe pitch-ul brut; recalcul din PitchTier-ul filtrat.</p>
-            <p><code>filter_f0_outliers</code>, <code>extract_energy_parameters</code>, și perechile <code>calculate_*_faithful</code> / <code>calculate_*_optimized</code> (modulație, Wiener, dispersie), fiecare cu un dispecer <code>get_*</code>.</p>
+            <p><code>filter_f0_outliers</code>, <code>extract_energy_parameters</code>, și perechile <code>calculate_*_faithful</code> / <code>calculate_*_experimental</code> (modulație, Wiener, dispersie), fiecare cu un dispecer <code>get_*</code>.</p>
           </div>
           <div class="card">
             <span class="tag">infrastructură</span>
@@ -634,10 +651,10 @@ python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\
           <li>Adaugă eticheta în constanta de antet <code>CALF_HEADER</code>/<code>COW_HEADER</code>. Cheia din dicționar trebuie să fie egală cu eticheta de antet <em>fără spațiile din față</em> (potrivirea se face pe numele „trimmed”).</li>
         </ol>
 
-        <h3>Cum adaugi o variantă <code>optimized</code></h3>
+        <h3>Cum adaugi o variantă <code>experimental</code></h3>
         <p>
           Urmează tiparul existent: <code>calculate_[metric]_faithful</code> +
-          <code>calculate_[metric]_optimized</code> + un dispecer <code>get_[metric](method, ...)</code>,
+          <code>calculate_[metric]_experimental</code> + un dispecer <code>get_[metric](method, ...)</code>,
           apoi un argument CLI <code>--[metric]-method</code> transmis prin dicționarul <code>methods</code>.
         </p>
 
@@ -653,15 +670,15 @@ python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\
 
         <h3>Testare rapidă</h3>
         <pre><code><span class="c"># verificare de sintaxă</span>
-python -m py_compile moo.py
+python -m py_compile bovine_acoustics.py
 
 <span class="c"># rulare + validare față de referință</span>
-python moo.py <span class="f">-i</span> date/LFC <span class="f">-o</span> out.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC <span class="f">--no-filter</span>
+python bovine_acoustics.py <span class="f">-i</span> date/LFC <span class="f">-o</span> out.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC <span class="f">--no-filter</span>
 python compare.py <span class="f">-orig</span> referinta.csv <span class="f">-new</span> out.csv <span class="f">-t</span> <span class="s">0.05</span> <span class="f">-r</span> <span class="s">0.01</span></code></pre>
       </section>
 
       <footer class="foot">
-        moo.py · analiză acustică a vocalizărilor bovine · reimplementare Python a fluxului Praat (MPT Ello)
+        bovine_acoustics.py · analiză acustică a vocalizărilor bovine · reimplementare Python a fluxului Praat (MPT Ello)
       </footer>
     </main>
   </div>

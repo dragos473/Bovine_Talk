@@ -1,8 +1,11 @@
-# Documentație — `moo.py`
+# Documentație — `bovine_acoustics.py`
 
 Analiză acustică a vocalizărilor bovine (viței și vaci), reimplementare în
 Python/`parselmouth` a fluxului manual din Praat descris de macro-urile
 `Script calves MPT Ello` și `Script cows MPT Ello.txt`.
+
+> **Unealtă internă de cercetare, nu un produs.** Scriptul este folosit intern
+> pentru analiza vocalizărilor și nu este destinat distribuirii ca produs.
 
 ---
 
@@ -72,27 +75,29 @@ pip install praat-parselmouth "numpy>=2.4.4" pandas openpyxl
 
 ## 4. Utilizare de bază
 
-Scriptul procesează **un director** de fișiere audio odată (extensii suportate:
-`.wav`, `.aif`, `.aiff`, `.au`).
+Scriptul procesează **un director** de fișiere audio odată. Sunt suportate
+extensiile `.wav`, `.aif`, `.aiff` și `.au`, însă **recomandarea puternică este
+`.wav`** (formatul pe care a fost testat și validat scriptul).
 
 **Viței (calf):**
 ```bash
-python moo.py -i cale/catre/director -o rezultate.csv -a calf
+python bovine_acoustics.py -i cale/catre/director -o rezultate.csv -a calf
 ```
 
 **Vaci (cow)** — cu tipul de vocalizare `-c` (LFC = joasă, gură închisă;
 HFC = înaltă, gură deschisă):
 ```bash
-python moo.py -i cale/catre/director -o rezultate.csv -a cow -c HFC
+python bovine_acoustics.py -i cale/catre/director -o rezultate.csv -a cow -c HFC
 ```
 
 Rezultatul este scris în fișierul indicat de `-o`, plus un `.xlsx` cu același
 nume (dacă `openpyxl` este instalat).
 
-> **Notă despre `-c` la viței:** analiza pentru viței folosește parametri ficși
-> (nu depinde de LFC/HFC), dar valoarea `-c` este folosită totuși pentru a
-> selecta tipul corect din fișierul `.tsv` (vezi secțiunea 9). De aceea, când
-> rulați pe un folder de HFC, treceți `-c HFC` chiar și pentru `-a calf`.
+> **Notă despre `-c`:** argumentul `-c/--call-type` este **obligatoriu** la orice
+> rulare. La viței, analiza folosește parametri ficși (nu depinde de LFC/HFC), dar
+> `-c` este folosit oricum pentru a selecta tipul corect din fișierul `.tsv`
+> (vezi secțiunea 9). De aceea, când rulați pe un folder de HFC, treceți `-c HFC`
+> chiar și pentru `-a calf`.
 
 ---
 
@@ -103,8 +108,8 @@ nume (dacă `openpyxl` este instalat).
 | `-i`, `--input_dir` | *(obligatoriu)* | Directorul cu fișierele audio. |
 | `-o`, `--output` | *(obligatoriu)* | Calea fișierului `.csv` de ieșire. |
 | `-a`, `--animal` | *(obligatoriu)* | `calf` (vițel) sau `cow` (vacă). |
-| `-c`, `--call_type` | `LFC` | Tipul vocalizării: `LFC` sau `HFC`. |
-| `--modulation-method` | `faithful` | `faithful` (identic Praat) sau `optimized`. |
+| `-c`, `--call-type` | *(obligatoriu)* | Tipul vocalizării: `LFC` sau `HFC`. Nu are valoare implicită. |
+| `--modulation-method` | `faithful` | `faithful` (identic Praat) sau `experimental` (de validat). |
 | `--wiener-method` | `faithful` | idem pentru entropia Wiener. |
 | `--dispersion-method` | `faithful` | idem pentru dispersia formanților. |
 | `--no-filter` | *(dezactivat)* | Oprește curățarea automată a anomaliilor F0. |
@@ -184,31 +189,43 @@ doriți reproducerea exactă a foilor de calcul vechi, nefiltrate).
 
 ---
 
-## 8. Implementări duble: `faithful` vs `optimized`
+## 8. Implementări duble: `faithful` vs `experimental`
 
 Acolo unde macro-urile Praat conțin o particularitate matematică sau o
 implementare non-standard, scriptul oferă două variante, selectabile din linia
-de comandă (implicit `faithful` peste tot, ca să corespundă exact rezultatelor
-vechi):
+de comandă (implicit `faithful` peste tot):
+
+- **`faithful`** reproduce **exact** matematica din macro-urile Praat, inclusiv
+  particularitățile lor. Rezultatele sunt identice cu foile de calcul istorice,
+  deci comparabile cu datele deja analizate. **Aceasta este varianta care trebuie
+  folosită** pentru analize reale.
+- **`experimental`** este o versiune corectată matematic a acelorași metrici.
+  Poate fi mai corectă teoretic, **dar nu a fost validată** — nu se știe încă
+  dacă schimbarea afectează concluziile biologice.
+
+> **De reținut:** variantele `experimental` **trebuie validate de un expert din
+> domeniu** înainte de a fi folosite în analize. Până atunci, folosiți `faithful`.
+
+Diferențele, pe metrici:
 
 - **Modulație (pitch/intensitate)** — `--modulation-method`
   - `faithful`: reproduce bucla Praat, inclusiv particularitatea de indexare
     (limita buclei ia numărul de puncte din `PitchTier`, dar indexează cadrele
     de pitch), cu alinierea corectă între indexarea 0-based NumPy și 1-based
     Praat.
-  - `optimized`: variantă vectorizată pe tot conturul valid.
+  - `experimental`: variantă vectorizată pe tot conturul valid.
 
 - **Entropie Wiener** — `--wiener-method`
   - `faithful`: reproduce fidel `To Spectrum (dft)` și particularitatea de
     indexare a matricei de putere din macro (rezultatul se potrivește exact cu
     referința).
-  - `optimized`: folosește binii reali din bandă și o medie geometrică corectă
+  - `experimental`: folosește binii reali din bandă și o medie geometrică corectă
     numeric (doar pe binii strict pozitivi).
 
 - **Dispersia formanților** — `--dispersion-method`
   - `faithful`: media distanțelor consecutive dintre formanți (formulă
     telescopică din Praat).
-  - `optimized`: panta prin regresie liniară pe (indice formant, frecvență),
+  - `experimental`: panta prin regresie liniară pe (indice formant, frecvență),
     care folosește toți formanții, nu doar extremele.
 
 ---
@@ -218,6 +235,10 @@ vechi):
 Dacă în **directorul fișierului de ieșire** (`-o`) există un fișier `.tsv`
 (numele nu contează — se caută primul `*.tsv`), scriptul adaugă la final două
 coloane, preluate din el.
+
+> **Sursa fișierului `.tsv`:** acest fișier nu este creat de acest script. El
+> este rezultatul unui **alt script intern, aplicat direct în Praat**, care
+> exportă intervalele adnotate (momentul și durata fiecărei vocalizări).
 
 Structura așteptată a `.tsv` (separat prin TAB):
 
@@ -283,7 +304,7 @@ iar `Comment` notează recuperarea). Astfel:
 Dacă timpul nu e o problemă și vreți recuperare cvasi-sigură:
 
 ```bash
-python moo.py -i .\HFC\ -o rezultate.csv -a calf -c HFC --isolate --retries 50
+python bovine_acoustics.py -i .\HFC\ -o rezultate.csv -a calf -c HFC --isolate --retries 50
 ```
 
 ### `--max-duration` — protecție împotriva fișierelor foarte lungi
@@ -291,7 +312,7 @@ Sare peste orice înregistrare mai lungă decât N secunde, verificând durata d
 antetul fișierului `.wav` **înainte** de a-l încărca în memorie:
 
 ```bash
-python moo.py -i ... -o ... -a calf --max-duration 120
+python bovine_acoustics.py -i ... -o ... -a calf --max-duration 120
 ```
 
 ---
@@ -311,7 +332,7 @@ python moo.py -i ... -o ... -a calf --max-duration 120
 Exemplu de bisectare a unei probleme:
 ```bash
 # dacă cu --skip-formants nu mai apar crash-uri, cauza este etapa de formanți
-python moo.py -i ... -o ... -a calf --isolate --skip-formants
+python bovine_acoustics.py -i ... -o ... -a calf --isolate --skip-formants
 ```
 
 ---
@@ -342,19 +363,19 @@ Recomandat pentru o evaluare corectă: `-t 0.05 -r 0.01`.
 
 ```bash
 # Vițel, folder LFC, cu toate funcțiile implicite (filtrare F0 activă)
-python moo.py -i .\0000\LFC\ -o .\0000\out_LFC.csv -a calf -c LFC
+python bovine_acoustics.py -i .\0000\LFC\ -o .\0000\out_LFC.csv -a calf -c LFC
 
 # Vițel, folder HFC, robust pe laptop (izolare + multe reîncercări)
-python moo.py -i .\0000\HFC\ -o .\0000\out_HFC.csv -a calf -c HFC --isolate --retries 50
+python bovine_acoustics.py -i .\0000\HFC\ -o .\0000\out_HFC.csv -a calf -c HFC --isolate --retries 50
 
 # Combinarea mai multor foldere într-un singur fișier (adăugare)
-python moo.py -i .\0001\HFC\ -o .\rezultate.csv -a calf -c HFC --isolate --append
+python bovine_acoustics.py -i .\0001\HFC\ -o .\rezultate.csv -a calf -c HFC --isolate --append
 
 # Reproducerea exactă a rezultatelor vechi (fără filtrarea automată)
-python moo.py -i .\0000\LFC\ -o .\out.csv -a calf -c LFC --no-filter
+python bovine_acoustics.py -i .\0000\LFC\ -o .\out.csv -a calf -c LFC --no-filter
 
 # Diagnostic: raport de memorie + traceback nativ la crash
-python moo.py -i .\0000\HFC\ -o .\out.csv -a calf -c HFC --isolate --mem-report --debug
+python bovine_acoustics.py -i .\0000\HFC\ -o .\out.csv -a calf -c HFC --isolate --mem-report --debug
 ```
 
 ---
