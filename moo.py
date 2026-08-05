@@ -20,7 +20,7 @@ functions are provided:
 
 * ``calculate_<metric>_faithful``  -- exact replication of the Praat macro
   (used for output, so results match the legacy spreadsheets bit-for-bit).
-* ``calculate_<metric>_optimized`` -- a mathematically cleaner version built on
+* ``calculate_<metric>_experimental`` -- a mathematically cleaner version built on
   standard vector operations.
 
 The variant used for the exported spreadsheet is selectable from the command
@@ -343,7 +343,7 @@ def calculate_modulations_faithful(values, num_points, duration):
     return var_rate, mod_rate, mod_extent
 
 
-def calculate_modulations_optimized(values, duration):
+def calculate_modulations_experimental(values, duration):
     """Vectorised modulation metrics over the full valid contour.
 
     Corrects the faithful version's frame-count quirk (it truncates the loop at
@@ -376,8 +376,8 @@ def calculate_modulations_optimized(values, duration):
 
 def get_modulations(method, values, num_points, duration):
     """Dispatch to the requested modulation implementation."""
-    if method == "optimized":
-        return calculate_modulations_optimized(values, duration)
+    if method == "experimental":
+        return calculate_modulations_experimental(values, duration)
     return calculate_modulations_faithful(values, num_points, duration)
 
 
@@ -459,7 +459,7 @@ def calculate_wiener_entropy_faithful(sound, start_freq, end_freq, time_stepWE):
     return sum_wiener_entropy / number_of_steps
 
 
-def calculate_wiener_entropy_optimized(sound, start_freq, end_freq, time_stepWE):
+def calculate_wiener_entropy_experimental(sound, start_freq, end_freq, time_stepWE):
     """Vectorised spectral-flatness with a numerically correct geometric mean.
 
     The faithful macro folds ``ln(0)`` from empty bins into the geometric-mean
@@ -512,8 +512,8 @@ def calculate_wiener_entropy_optimized(sound, start_freq, end_freq, time_stepWE)
 
 
 def get_wiener_entropy(method, sound, start_freq, end_freq, time_stepWE):
-    if method == "optimized":
-        return calculate_wiener_entropy_optimized(sound, start_freq, end_freq, time_stepWE)
+    if method == "experimental":
+        return calculate_wiener_entropy_experimental(sound, start_freq, end_freq, time_stepWE)
     return calculate_wiener_entropy_faithful(sound, start_freq, end_freq, time_stepWE)
 
 
@@ -538,7 +538,7 @@ def calculate_dispersion_faithful(f_means):
     return total / (k - 1)
 
 
-def calculate_dispersion_optimized(f_means):
+def calculate_dispersion_experimental(f_means):
     """Least-squares formant spacing (Reby & McComb style).
 
     Fits a line through (formant number, frequency) and takes the slope as the
@@ -554,8 +554,8 @@ def calculate_dispersion_optimized(f_means):
 
 
 def get_dispersion(method, f_means):
-    if method == "optimized":
-        return calculate_dispersion_optimized(f_means)
+    if method == "experimental":
+        return calculate_dispersion_experimental(f_means)
     return calculate_dispersion_faithful(f_means)
 
 
@@ -1248,16 +1248,24 @@ def main():
                         help="Path to the output CSV file.")
     parser.add_argument("-a", "--animal", required=True, choices=["calf", "cow"],
                         help="Animal type for the dataset.")
-    parser.add_argument("-c", "--call_type", choices=["LFC", "HFC"], default="LFC",
-                        help="Call type (cow only). Default is LFC.")
+    parser.add_argument("-c", "--call-type", "--call_type", dest="call_type",
+                        required=True, choices=["LFC", "HFC"],
+                        help="Vocalization type for this run: LFC or HFC. Required "
+                             "(no default) -- selects the matching rows from the TSV "
+                             "and, for cows, the pitch/formant parameters.")
 
-    # Dual-implementation selectors (default: faithful == legacy Praat math).
-    parser.add_argument("--modulation-method", choices=["faithful", "optimized"],
-                        default="faithful")
-    parser.add_argument("--wiener-method", choices=["faithful", "optimized"],
-                        default="faithful")
-    parser.add_argument("--dispersion-method", choices=["faithful", "optimized"],
-                        default="faithful")
+    # Metric-variant selectors. 'faithful' reproduces the legacy Praat math and
+    # must be used for real analyses; 'experimental' is a not-yet-validated
+    # alternative that must be checked by a domain expert before use.
+    parser.add_argument("--modulation-method", choices=["faithful", "experimental"],
+                        default="faithful",
+                        help="F0/intensity modulation variant. Default faithful.")
+    parser.add_argument("--wiener-method", choices=["faithful", "experimental"],
+                        default="faithful",
+                        help="Wiener-entropy variant. Default faithful.")
+    parser.add_argument("--dispersion-method", choices=["faithful", "experimental"],
+                        default="faithful",
+                        help="Formant-dispersion variant. Default faithful.")
 
     # F0 outlier-filter configuration.
     parser.add_argument("--no-filter", action="store_true",
