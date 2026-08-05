@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentație — moo.py · analiză acustică a vocalizărilor bovine</title>
+<meta name="description" content="Documentație în română pentru moo.py: scop, utilizare, argumente CLI, curățarea anomaliilor F0 și referință pentru dezvoltatori.">
+</head>
+<body>
+<style>
+  :root {
+    --paper:#F1F3EE; --paper-2:#E8EBE3; --panel:#FBFCF9;
+    --ink:#16201F; --ink-soft:#4A5653; --ink-faint:#77837F;
+    --line:#D6DCD2; --line-strong:#C3CBBE;
+    --accent:#0F6E79; --accent-2:#0A525B; --accent-tint:#DCEBEC;
+    --spike:#C82E74; --spike-tint:#F6E1EC;
+    --code-bg:#101A1C; --code-fg:#D6E2E0; --code-line:#22312F;
+    --code-tealo:#5FC7D2; --code-mag:#F177A9; --code-mut:#7C8F8C;
+    --font-body:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"Cascadia Code","SFMono-Regular","JetBrains Mono",Consolas,monospace;
+    --maxw:74ch;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0E1518; --paper-2:#131E21; --panel:#15211F;
+      --ink:#E8EDE8; --ink-soft:#A6B4B0; --ink-faint:#75837F;
+      --line:#233230; --line-strong:#31423F;
+      --accent:#3FB6C4; --accent-2:#63C9D4; --accent-tint:#132B2E;
+      --spike:#F0559A; --spike-tint:#2A1622;
+      --code-bg:#0A1214; --code-fg:#D6E2E0; --code-line:#1c2b29;
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#F1F3EE; --paper-2:#E8EBE3; --panel:#FBFCF9;
+    --ink:#16201F; --ink-soft:#4A5653; --ink-faint:#77837F;
+    --line:#D6DCD2; --line-strong:#C3CBBE;
+    --accent:#0F6E79; --accent-2:#0A525B; --accent-tint:#DCEBEC;
+    --spike:#C82E74; --spike-tint:#F6E1EC;
+    --code-bg:#101A1C; --code-fg:#D6E2E0; --code-line:#22312F;
+  }
+  :root[data-theme="dark"]{
+    --paper:#0E1518; --paper-2:#131E21; --panel:#15211F;
+    --ink:#E8EDE8; --ink-soft:#A6B4B0; --ink-faint:#75837F;
+    --line:#233230; --line-strong:#31423F;
+    --accent:#3FB6C4; --accent-2:#63C9D4; --accent-tint:#132B2E;
+    --spike:#F0559A; --spike-tint:#2A1622;
+    --code-bg:#0A1214; --code-fg:#D6E2E0; --code-line:#1c2b29;
+  }
+
+  *{box-sizing:border-box;}
+  .doc{
+    background:var(--paper); color:var(--ink);
+    font-family:var(--font-body); line-height:1.65;
+    font-size:16px; -webkit-font-smoothing:antialiased;
+    padding:0; margin:0;
+  }
+  .doc ::selection{background:var(--accent); color:var(--paper);}
+
+  /* ---------- Header ---------- */
+  .hero{
+    border-bottom:1px solid var(--line);
+    background:
+      radial-gradient(120% 140% at 88% -20%, var(--accent-tint) 0%, transparent 55%),
+      var(--paper);
+    padding:clamp(2rem,5vw,3.4rem) clamp(1.1rem,5vw,3rem) clamp(1.4rem,3vw,2rem);
+  }
+  .hero-wrap{max-width:1080px;margin:0 auto;}
+  .eyebrow{
+    font-family:var(--font-mono); font-size:.74rem; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--accent-2); margin:0 0 .9rem;
+    display:flex; align-items:center; gap:.6rem;
+  }
+  .eyebrow::before{content:""; width:26px; height:2px; background:var(--accent); display:inline-block;}
+  .hero h1{
+    font-size:clamp(1.9rem,4.6vw,3.05rem); line-height:1.04; margin:0;
+    letter-spacing:-.02em; font-weight:800; text-wrap:balance; max-width:20ch;
+  }
+  .hero h1 em{font-style:normal; color:var(--accent);}
+  .hero .lede{
+    margin:.95rem 0 0; max-width:60ch; color:var(--ink-soft);
+    font-size:1.06rem;
+  }
+  .motif{
+    margin-top:1.6rem; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel); overflow:hidden;
+  }
+  .motif canvas{display:block; width:100%; height:130px;}
+  .motif-cap{
+    display:flex; flex-wrap:wrap; gap:.5rem 1.3rem; align-items:center;
+    padding:.55rem .85rem; border-top:1px solid var(--line);
+    font-family:var(--font-mono); font-size:.72rem; color:var(--ink-faint);
+    letter-spacing:.02em;
+  }
+  .key{display:inline-flex; align-items:center; gap:.4rem;}
+  .key i{width:10px;height:10px;border-radius:50%;display:inline-block;}
+  .key.teal i{background:var(--accent);}
+  .key.mag i{background:var(--spike);}
+  .key.base i{width:16px;height:0;border-top:2px dashed var(--ink-faint);border-radius:0;}
+
+  /* ---------- Layout ---------- */
+  .shell{
+    max-width:1080px; margin:0 auto; padding:0 clamp(1.1rem,5vw,3rem);
+    display:grid; grid-template-columns:1fr; gap:0;
+  }
+  @media (min-width:960px){
+    .shell{grid-template-columns:232px minmax(0,1fr); gap:3.2rem; align-items:start;}
+  }
+  nav.toc{
+    position:sticky; top:0; align-self:start;
+    padding:1.6rem 0; font-size:.9rem;
+    border-bottom:1px solid var(--line);
+  }
+  @media (min-width:960px){
+    nav.toc{top:1.2rem; padding:2.4rem 0; border-bottom:none; max-height:calc(100vh - 2.4rem); overflow:auto;}
+  }
+  nav.toc .toc-h{
+    font-family:var(--font-mono); font-size:.68rem; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--ink-faint); margin:0 0 .7rem;
+  }
+  nav.toc ol{list-style:none; margin:0; padding:0; counter-reset:t;}
+  nav.toc li{counter-increment:t;}
+  nav.toc a{
+    display:grid; grid-template-columns:1.9rem 1fr; align-items:baseline;
+    gap:.2rem; padding:.24rem 0; color:var(--ink-soft);
+    text-decoration:none; border-radius:5px; line-height:1.3;
+  }
+  nav.toc a::before{
+    content:counter(t,decimal-leading-zero);
+    font-family:var(--font-mono); font-size:.72rem; color:var(--accent-2);
+  }
+  nav.toc a:hover{color:var(--ink);}
+  nav.toc a:hover span{text-decoration:underline; text-underline-offset:3px;}
+
+  main.content{padding:1.4rem 0 4rem; min-width:0;}
+
+  section.sec{
+    padding:2rem 0; border-top:1px solid var(--line); scroll-margin-top:1.5rem;
+  }
+  section.sec:first-child{border-top:none;}
+  .sec-no{
+    font-family:var(--font-mono); font-size:.74rem; letter-spacing:.12em;
+    color:var(--accent-2); text-transform:uppercase; margin:0 0 .45rem;
+  }
+  h2{
+    font-size:clamp(1.35rem,2.6vw,1.72rem); line-height:1.15; margin:0 0 .9rem;
+    letter-spacing:-.015em; font-weight:750; text-wrap:balance;
+  }
+  h3{
+    font-size:1.06rem; margin:1.7rem 0 .55rem; font-weight:700; letter-spacing:-.01em;
+  }
+  p{margin:.7rem 0; max-width:var(--maxw); color:var(--ink);}
+  .content p{color:var(--ink-soft);} .content p strong{color:var(--ink);}
+  ul,ol.list{max-width:var(--maxw); padding-left:1.15rem; margin:.7rem 0; color:var(--ink-soft);}
+  li{margin:.32rem 0;}
+  li strong{color:var(--ink);}
+  code{
+    font-family:var(--font-mono); font-size:.86em;
+    background:var(--paper-2); border:1px solid var(--line);
+    padding:.06em .38em; border-radius:5px; color:var(--ink);
+    white-space:nowrap;
+  }
+  a.inl{color:var(--accent); text-decoration:underline; text-underline-offset:2px;}
+
+  /* code blocks — dark readout in both themes */
+  pre{
+    background:var(--code-bg); color:var(--code-fg);
+    border:1px solid var(--code-line); border-radius:9px;
+    padding:.95rem 1.05rem; overflow-x:auto; margin:1rem 0;
+    font-family:var(--font-mono); font-size:.83rem; line-height:1.6;
+    max-width:100%;
+  }
+  pre code{background:none; border:none; padding:0; color:inherit; white-space:pre;}
+  pre .c{color:var(--code-mut);}      /* comment */
+  pre .f{color:var(--code-tealo);}    /* flag */
+  pre .s{color:var(--code-mag);}      /* string/value */
+  .cmd-label{
+    font-family:var(--font-mono); font-size:.68rem; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-faint); margin:1.1rem 0 -.4rem;
+  }
+
+  /* tables */
+  .twrap{overflow-x:auto; margin:1.1rem 0; border:1px solid var(--line); border-radius:9px;}
+  table{border-collapse:collapse; width:100%; font-size:.9rem; min-width:520px;}
+  th,td{text-align:left; padding:.55rem .8rem; border-bottom:1px solid var(--line); vertical-align:top;}
+  thead th{
+    background:var(--paper-2); font-family:var(--font-mono); font-weight:600;
+    font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft);
+    position:sticky; top:0;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  td code{white-space:nowrap;}
+  td.def{color:var(--ink-faint); font-family:var(--font-mono); font-size:.82rem; white-space:nowrap;}
+
+  /* callouts */
+  .note{
+    border-left:3px solid var(--accent); background:var(--accent-tint);
+    padding:.75rem 1rem; border-radius:0 8px 8px 0; margin:1.1rem 0;
+    max-width:var(--maxw); font-size:.94rem; color:var(--ink);
+  }
+  .note.warn{border-left-color:var(--spike); background:var(--spike-tint);}
+  .note .nl{
+    font-family:var(--font-mono); font-size:.68rem; letter-spacing:.12em;
+    text-transform:uppercase; display:block; margin-bottom:.25rem; color:var(--accent-2);
+  }
+  .note.warn .nl{color:var(--spike);}
+
+  /* cards for faithful/optimized + dev groups */
+  .cards{display:grid; gap:1rem; grid-template-columns:1fr; margin:1.1rem 0;}
+  @media (min-width:640px){.cards.three{grid-template-columns:repeat(3,1fr);} .cards.two{grid-template-columns:1fr 1fr;}}
+  .card{
+    border:1px solid var(--line); border-radius:10px; background:var(--panel);
+    padding:1rem 1.05rem;
+  }
+  .card h4{margin:0 0 .35rem; font-size:.96rem; font-weight:700;}
+  .card .tag{
+    font-family:var(--font-mono); font-size:.68rem; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--accent-2); display:block; margin-bottom:.5rem;
+  }
+  .card p{font-size:.88rem; margin:.35rem 0;}
+  .card .v{color:var(--ink); font-weight:600;}
+
+  /* pipeline flow (dev) */
+  .flow{
+    display:flex; flex-wrap:wrap; gap:.45rem; align-items:stretch; margin:1.1rem 0;
+    font-family:var(--font-mono); font-size:.78rem;
+  }
+  .flow .step{
+    background:var(--paper-2); border:1px solid var(--line-strong);
+    border-radius:7px; padding:.4rem .6rem; color:var(--ink); display:flex; align-items:center;
+  }
+  .flow .step.hl{border-color:var(--spike); color:var(--spike); background:var(--spike-tint);}
+  .flow .arw{align-self:center; color:var(--ink-faint);}
+
+  footer.foot{
+    border-top:1px solid var(--line); padding:1.6rem 0 3rem; margin-top:1rem;
+    color:var(--ink-faint); font-size:.85rem; font-family:var(--font-mono);
+    letter-spacing:.02em;
+  }
+  @media (prefers-reduced-motion:no-preference){
+    nav.toc a{transition:color .15s ease;}
+  }
+</style>
+
+<div class="doc">
+  <header class="hero">
+    <div class="hero-wrap">
+      <p class="eyebrow">Documentație · analiză acustică · Praat → Python</p>
+      <h1>Vocalizări bovine, măsurate <em>reproductibil</em>.</h1>
+      <p class="lede">
+        <code>moo.py</code> parcurge un director de înregistrări, curăță automat
+        anomaliile din conturul de frecvență fundamentală și exportă un set complet
+        de parametri acustici — o reimplementare fidelă în Python a fluxului manual
+        din Praat.
+      </p>
+      <div class="motif" aria-label="Contur F0 cu o secvență anormală eliminată">
+        <canvas id="f0canvas" width="1040" height="260"></canvas>
+        <div class="motif-cap">
+          <span class="key teal"><i></i>contur F0 vocal</span>
+          <span class="key mag"><i></i>anomalie (săritură de octavă) eliminată</span>
+          <span class="key base"><i></i>mediană glisantă (linia de bază)</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="toc" aria-label="Cuprins">
+      <p class="toc-h">Cuprins</p>
+      <ol>
+        <li><a href="#scop"><span>Scop</span></a></li>
+        <li><a href="#ce-face"><span>Ce face, pe scurt</span></a></li>
+        <li><a href="#instalare"><span>Cerințe și instalare</span></a></li>
+        <li><a href="#utilizare"><span>Utilizare de bază</span></a></li>
+        <li><a href="#argumente"><span>Argumentele liniei de comandă</span></a></li>
+        <li><a href="#iesire"><span>Structura fișierului de ieșire</span></a></li>
+        <li><a href="#f0"><span>Curățarea anomaliilor F0</span></a></li>
+        <li><a href="#dual"><span>faithful vs optimized</span></a></li>
+        <li><a href="#tsv"><span>Coloanele Duration(s) și Start</span></a></li>
+        <li><a href="#robust"><span>Rulare robustă</span></a></li>
+        <li><a href="#depanare"><span>Depanare</span></a></li>
+        <li><a href="#validare"><span>Validare (compare.py)</span></a></li>
+        <li><a href="#exemple"><span>Exemple uzuale</span></a></li>
+        <li><a href="#limitari"><span>Note și limitări</span></a></li>
+        <li><a href="#dev"><span>Pentru dezvoltatori</span></a></li>
+      </ol>
+    </nav>
+
+    <main class="content">
+
+      <section class="sec" id="scop">
+        <p class="sec-no">§01</p>
+        <h2>Scop</h2>
+        <p>
+          Aplicația este folosită de cercetători din domeniul veterinar și al
+          acusticii pentru a analiza comportamentul animalelor pe baza înregistrărilor
+          audio. Scriptul parcurge automat un director cu fișiere audio, calculează un
+          set de parametri acustici pentru fiecare vocalizare (de vițel sau de vacă) și
+          exportă rezultatele într-un tabel <code>.csv</code> și, opțional, <code>.xlsx</code>.
+        </p>
+        <p>
+          Față de fluxul manual din Praat, scriptul adaugă un pas <strong>automat</strong>
+          de curățare a conturului de frecvență fundamentală (F0): detectează și elimină
+          „săriturile” de urmărire — pasul pe care cercetătorul îl făcea manual în editorul
+          de pitch, exact secvența magenta din graficul de mai sus.
+        </p>
+      </section>
+
+      <section class="sec" id="ce-face">
+        <p class="sec-no">§02</p>
+        <h2>Ce face, pe scurt</h2>
+        <p>Pentru fiecare fișier audio, scriptul calculează:</p>
+        <ul>
+          <li><strong>Parametri de sursă (F0 / pitch):</strong> media, start/final, maxim,
+            minim, interval, momentul maximului, panta absolută medie, variația și modulația
+            de frecvență (FM rate, FM extent).</li>
+          <li><strong>Energie spectrală:</strong> quartilele Q25/Q50/Q75 și frecvența de vârf (Fpeak).</li>
+          <li><strong>Amplitudine (intensitate):</strong> AM var, AM rate, AM extent și durata sunetului.</li>
+          <li><strong>Armonicitate</strong> (raportul armonic/zgomot, HNR).</li>
+          <li><strong>Formanți</strong> (F1–F6 la viței, F1–F8 la vaci), dispersia formanților și
+            lungimea estimată a tractului vocal.</li>
+          <li><strong>Entropie Wiener</strong> (planeitatea spectrală).</li>
+          <li><strong>(Opțional) Durata și ora vocalizării</strong> dintr-un fișier <code>.tsv</code> de adnotare.</li>
+        </ul>
+        <p>
+          Blocurile deterministe (Q25/Q50/Q75, Fpeak, durata, entropia Wiener) reproduc
+          valorile de referință la nivel de rotunjire.
+        </p>
+      </section>
+
+      <section class="sec" id="instalare">
+        <p class="sec-no">§03</p>
+        <h2>Cerințe și instalare</h2>
+        <p>Python 3.10+ (testat pe 3.12). Instalare din fișierul de dependențe:</p>
+        <pre><code>pip install -r requirements.txt</code></pre>
+        <p>sau manual:</p>
+        <pre><code>pip install praat-parselmouth <span class="s">"numpy>=2.4.4"</span> pandas openpyxl</code></pre>
+        <div class="note warn">
+          <span class="nl">Important — stabilitate</span>
+          <code>numpy</code> este fixat la <code>&gt;=2.4.4</code>. Pe <code>numpy 2.4.2</code> s-au
+          observat blocări native în motorul <code>parselmouth</code> pe Windows, care nu apăreau
+          pe <code>2.4.4</code>. <code>openpyxl</code> este opțional — necesar doar pentru exportul
+          <code>.xlsx</code> (fișierul <code>.csv</code> se scrie oricum).
+        </div>
+      </section>
+
+      <section class="sec" id="utilizare">
+        <p class="sec-no">§04</p>
+        <h2>Utilizare de bază</h2>
+        <p>Scriptul procesează <strong>un director</strong> odată (extensii: <code>.wav</code>,
+          <code>.aif</code>, <code>.aiff</code>, <code>.au</code>).</p>
+        <p class="cmd-label">Viței</p>
+        <pre><code>python moo.py <span class="f">-i</span> cale/catre/director <span class="f">-o</span> rezultate.csv <span class="f">-a</span> calf</code></pre>
+        <p class="cmd-label">Vaci — cu tipul de vocalizare</p>
+        <pre><code>python moo.py <span class="f">-i</span> director <span class="f">-o</span> rezultate.csv <span class="f">-a</span> cow <span class="f">-c</span> HFC</code></pre>
+        <div class="note">
+          <span class="nl">Notă despre -c la viței</span>
+          Analiza pentru viței folosește parametri ficși (nu depinde de LFC/HFC), dar valoarea
+          <code>-c</code> este folosită pentru a selecta tipul corect din fișierul <code>.tsv</code>
+          (vezi §09). Când rulați pe un folder HFC, treceți <code>-c HFC</code> chiar și pentru
+          <code>-a calf</code>.
+        </div>
+      </section>
+
+      <section class="sec" id="argumente">
+        <p class="sec-no">§05</p>
+        <h2>Argumentele liniei de comandă</h2>
+        <div class="twrap">
+          <table>
+            <thead><tr><th>Argument</th><th>Implicit</th><th>Descriere</th></tr></thead>
+            <tbody>
+              <tr><td><code>-i</code>, <code>--input_dir</code></td><td class="def">obligatoriu</td><td>Directorul cu fișierele audio.</td></tr>
+              <tr><td><code>-o</code>, <code>--output</code></td><td class="def">obligatoriu</td><td>Calea fișierului <code>.csv</code> de ieșire.</td></tr>
+              <tr><td><code>-a</code>, <code>--animal</code></td><td class="def">obligatoriu</td><td><code>calf</code> (vițel) sau <code>cow</code> (vacă).</td></tr>
+              <tr><td><code>-c</code>, <code>--call_type</code></td><td class="def">LFC</td><td>Tipul vocalizării: <code>LFC</code> sau <code>HFC</code>.</td></tr>
+              <tr><td><code>--modulation-method</code></td><td class="def">faithful</td><td><code>faithful</code> (identic Praat) sau <code>optimized</code>.</td></tr>
+              <tr><td><code>--wiener-method</code></td><td class="def">faithful</td><td>idem, pentru entropia Wiener.</td></tr>
+              <tr><td><code>--dispersion-method</code></td><td class="def">faithful</td><td>idem, pentru dispersia formanților.</td></tr>
+              <tr><td><code>--no-filter</code></td><td class="def">dezactivat</td><td>Oprește curățarea automată a anomaliilor F0.</td></tr>
+              <tr><td><code>--filter-window</code></td><td class="def">5</td><td>Fereastra medianei glisante (cadre).</td></tr>
+              <tr><td><code>--filter-jump</code></td><td class="def">30</td><td>Pragul (Hz) al săriturii ce marchează o anomalie.</td></tr>
+              <tr><td><code>--filter-return-tol</code></td><td class="def">15</td><td>Toleranța (Hz) de revenire la linia de bază.</td></tr>
+              <tr><td><code>--isolate</code></td><td class="def">dezactivat</td><td>Rulează fiecare fișier într-un subproces separat.</td></tr>
+              <tr><td><code>--retries</code></td><td class="def">10</td><td>Reîncercări complete după un crash nativ.</td></tr>
+              <tr><td><code>--timeout</code></td><td class="def">fără</td><td>Limită de timp per fișier (s), doar cu <code>--isolate</code>.</td></tr>
+              <tr><td><code>--max-duration</code></td><td class="def">fără</td><td>Sare peste înregistrările mai lungi de N secunde.</td></tr>
+              <tr><td><code>--mem-report</code></td><td class="def">dezactivat</td><td>Afișează memoria maximă folosită per fișier.</td></tr>
+              <tr><td><code>--skip-wiener</code></td><td class="def">dezactivat</td><td>Sare peste etapa Wiener (diagnostic).</td></tr>
+              <tr><td><code>--skip-formants</code></td><td class="def">dezactivat</td><td>Sare peste etapa de formanți (diagnostic).</td></tr>
+              <tr><td><code>--debug</code></td><td class="def">dezactivat</td><td>Afișează urmărirea nativă (traceback) la crash.</td></tr>
+              <tr><td><code>--append</code></td><td class="def">dezactivat</td><td>Adaugă la fișierul existent în loc să-l suprascrie.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="sec" id="iesire">
+        <p class="sec-no">§06</p>
+        <h2>Structura fișierului de ieșire</h2>
+        <p>
+          Antetele reproduc exact parametrii din macro-urile Praat (<code>fileappend</code>),
+          inclusiv regulile de formatare zecimală (de obicei 3 zecimale; câmpuri nedefinite
+          scrise ca <code>--undefined--</code>).
+        </p>
+        <h3>Viței (<code>-a calf</code>)</h3>
+        <pre><code>file, Mean F0 (Hz), Start F0 (Hz), End F0 (Hz), Max F0 (Hz), Min F0 (Hz),
+Range F0 (Hz), Time max F0 (%), F0 Abs Slope, F0 var (Hz/s), FM Rate (s-1),
+FM Extent (Hz), Q25% (Hz), Q50% (Hz), Q75% (Hz), Fpeak (Hz), Sound duration (s),
+AM var (dB/s), AM rate (s-1), AM extent (dB), Harmonicity, F1..F6 mean (Hz),
+formant dispersal (Hz), vocal tract length (cm), mean wiener entropy, Comment</code></pre>
+        <p>
+          <strong>Vaci (<code>-a cow</code>)</strong> conțin în plus coloana <code>Call type</code>,
+          au formanți <code>F1..F8</code> și nu conțin Start/End F0, Time max, panta și modulația F0
+          (conform scriptului de referință pentru vaci). La final, dacă există un <code>.tsv</code>,
+          se adaugă coloanele <code>Duration(s)</code> și <code>Start</code> (vezi §09).
+        </p>
+        <p>Coloana <strong><code>Comment</code></strong> semnalează automat:</p>
+        <ul>
+          <li><code>unvoiced</code> — dacă filtrul a eliminat cadre anomale din F0;</li>
+          <li><code>engine crash: ...</code> — dacă fișierul a fost recuperat sărind o etapă care a provocat un crash nativ (vezi §10).</li>
+        </ul>
+      </section>
+
+      <section class="sec" id="f0">
+        <p class="sec-no">§07 · funcția centrală</p>
+        <h2>Curățarea automată a anomaliilor F0</h2>
+        <p>
+          Algoritmul de urmărire a pitch-ului produce uneori „sărituri” bruște (la o octavă
+          sau la o armonică superioară) care denaturează statisticile F0. În Praat, cercetătorul
+          le elimina manual. Aici pasul este automat (<code>filter_f0_outliers</code>):
+        </p>
+        <ol class="list">
+          <li>Se extrage conturul F0 într-un vector NumPy (cadrele nevocale = <code>NaN</code>).</li>
+          <li>Se calculează diferența dintre cadre consecutive: <code>Δf = |F0[i] − F0[i−1]|</code>.</li>
+          <li>Se calculează o <strong>mediană glisantă</strong> ca „linie de bază” a frecvenței reale.</li>
+          <li>Când apare o săritură <code>≥ --filter-jump</code> (implicit 30&nbsp;Hz) care duce valoarea la
+            peste ~30&nbsp;Hz distanță de linia de bază, se marchează începutul unei secvențe anormale.</li>
+          <li>Se marchează <strong>întreaga secvență contiguă</strong>, până când urmărirea revine la linia
+            de bază (în limita <code>--filter-return-tol</code>) sau se termină segmentul vocal.</li>
+          <li>Cadrele marcate sunt eliminate; se construiește un <strong>PitchTier corectat</strong>, iar
+            statisticile F0 și modulațiile se recalculează din el.</li>
+        </ol>
+        <p>
+          Detectarea se face pe conturul de pitch <strong>brut</strong> (înainte de netezire/interpolare),
+          fiindcă acolo sunt vizibile săriturile — exact ca în fluxul manual Praat. Fișierele fără anomalii
+          rămân identice cu rezultatul clasic. Filtrarea este <strong>activă implicit</strong>; se dezactivează
+          cu <code>--no-filter</code> (util pentru reproducerea exactă a foilor de calcul vechi).
+        </p>
+      </section>
+
+      <section class="sec" id="dual">
+        <p class="sec-no">§08</p>
+        <h2>Implementări duble: <code>faithful</code> vs <code>optimized</code></h2>
+        <p>
+          Acolo unde macro-urile Praat conțin o particularitate matematică, scriptul oferă două
+          variante (implicit <code>faithful</code> peste tot, pentru a corespunde exact rezultatelor vechi):
+        </p>
+        <div class="cards three">
+          <div class="card">
+            <span class="tag">--modulation-method</span>
+            <h4>Modulație F0 / intensitate</h4>
+            <p><span class="v">faithful:</span> reproduce bucla Praat, inclusiv particularitatea de indexare (limita din <code>PitchTier</code>, indexarea cadrelor), cu alinierea corectă 0-based ↔ 1-based.</p>
+            <p><span class="v">optimized:</span> variantă vectorizată pe tot conturul valid.</p>
+          </div>
+          <div class="card">
+            <span class="tag">--wiener-method</span>
+            <h4>Entropie Wiener</h4>
+            <p><span class="v">faithful:</span> reproduce <code>To Spectrum (dft)</code> și particularitatea de indexare a matricei de putere (rezultat identic cu referința).</p>
+            <p><span class="v">optimized:</span> binii reali din bandă + medie geometrică corectă numeric (doar binii pozitivi).</p>
+          </div>
+          <div class="card">
+            <span class="tag">--dispersion-method</span>
+            <h4>Dispersia formanților</h4>
+            <p><span class="v">faithful:</span> media distanțelor consecutive dintre formanți (formula telescopică Praat).</p>
+            <p><span class="v">optimized:</span> panta prin regresie liniară pe (indice formant, frecvență) — folosește toți formanții.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="sec" id="tsv">
+        <p class="sec-no">§09</p>
+        <h2>Coloanele <code>Duration(s)</code> și <code>Start</code></h2>
+        <p>
+          Dacă în <strong>directorul fișierului de ieșire</strong> există un fișier <code>.tsv</code>
+          (numele nu contează — se caută primul <code>*.tsv</code>), scriptul adaugă la final două coloane
+          preluate din el. Structura așteptată (separat prin TAB):
+        </p>
+        <pre><code>tmin      tier      text   tmax        tsec        Ora_Muget
+9.265731  8_00_6    HFC    10.300537   1.034805... 08:41:29
+...</code></pre>
+        <h3>Maparea</h3>
+        <ul>
+          <li>Se păstrează doar rândurile al căror <code>text</code> este de <strong>tipul rulării</strong> (LFC/HFC, dat de <code>-c</code>).</li>
+          <li>Al <strong>k</strong>-lea rând de acel tip (în ordinea din <code>.tsv</code>, cronologică) este asociat fișierului <code>&lt;TIP&gt;_k</code> după numărul din nume: primul HFC → <code>HFC_1</code>, al doilea → <code>HFC_2</code>…</li>
+          <li><code>tsec</code> → <strong>Duration(s)</strong> (3 zecimale); <code>Ora_Muget</code> → <strong>Start</strong> (ora exactă, ex. <code>08:41:29</code>).</li>
+        </ul>
+        <div class="note">
+          <span class="nl">Comportament robust</span>
+          Fără <code>.tsv</code> valid, cele două coloane sunt omise, motivul e afișat, iar rularea continuă.
+          La nepotrivire de număr, rândurile fără corespondent primesc valori goale și se afișează un avertisment.
+        </div>
+        <div class="note warn">
+          <span class="nl">Cerință de numerotare</span>
+          Fișierele trebuie denumite <code>&lt;TIP&gt;_&lt;k&gt;</code> (ex. <code>HFC_1.wav</code>), unde
+          <code>k</code> este ordinea vocalizării de acel tip. Doar așa asocierea cu <code>.tsv</code> este corectă.
+        </div>
+      </section>
+
+      <section class="sec" id="robust">
+        <p class="sec-no">§10</p>
+        <h2>Rulare robustă pe mașini cu resurse limitate</h2>
+        <p>Analiza folosește exclusiv <strong>CPU și RAM</strong> (Praat via <code>parselmouth</code>, plus NumPy/Pandas) — <strong>nu</strong> folosește placa video (GPU).</p>
+        <h3><code>--isolate</code> — izolarea fiecărui fișier</h3>
+        <p>
+          Rulează fiecare fișier într-un <strong>subproces separat</strong> care se închide la final: memoria
+          este eliberată complet între fișiere, iar un fișier care blochează motorul (crash nativ) omoară doar
+          propriul subproces, nu întreaga rulare. Recomandat pe laptop-uri cu RAM puțin.
+        </p>
+        <h3><code>--retries</code> — recuperare după crash nativ</h3>
+        <p>
+          Unele fișiere pot provoca un <strong>crash nativ</strong> (<code>access violation</code> / segfault) în
+          etapa de formanți din <code>parselmouth</code>. Crash-ul este <strong>nedeterminist</strong> (depinde de
+          dispunerea memoriei procesului), deci reluarea analizei complete într-un proces nou reușește de obicei la
+          o încercare ulterioară. Cu <code>--isolate</code>, scriptul reia analiza completă de până la
+          <code>--retries</code> ori (implicit 10); doar dacă toate eșuează, salvează fișierul sărind etapa
+          problematică (coloanele rămân <code>--undefined--</code>, iar <code>Comment</code> notează recuperarea).
+        </p>
+        <pre><code><span class="c"># timpul nu contează → recuperare cvasi-sigură cu formanți</span>
+python moo.py <span class="f">-i</span> .\HFC\ <span class="f">-o</span> rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--retries</span> <span class="s">50</span></code></pre>
+        <h3><code>--max-duration</code> — protecție împotriva fișierelor lungi</h3>
+        <p>Sare peste orice înregistrare mai lungă de N secunde, verificând durata din antetul <code>.wav</code> <strong>înainte</strong> de a o încărca în memorie.</p>
+      </section>
+
+      <section class="sec" id="depanare">
+        <p class="sec-no">§11</p>
+        <h2>Depanare</h2>
+        <ul>
+          <li><strong><code>--mem-report</code></strong> — memoria maximă per fișier (cu <code>--isolate</code>) sau cumulativă. Funcționează pe Windows, Linux și macOS.</li>
+          <li><strong><code>--debug</code></strong> — urmărirea nativă completă (<code>faulthandler</code>) la crash. Implicit dezactivat: crash-urile sunt raportate pe o singură linie și reîncercate.</li>
+          <li><strong><code>--skip-formants</code> / <code>--skip-wiener</code></strong> — sar peste o etapă nativă „grea”. Utile pentru a localiza etapa care provoacă un crash sau ca soluție de rezervă.</li>
+        </ul>
+        <pre><code><span class="c"># dacă --skip-formants elimină crash-urile, cauza e etapa de formanți</span>
+python moo.py <span class="f">-i</span> ... <span class="f">-o</span> ... <span class="f">-a</span> calf <span class="f">--isolate</span> <span class="f">--skip-formants</span></code></pre>
+      </section>
+
+      <section class="sec" id="validare">
+        <p class="sec-no">§12</p>
+        <h2>Validare față de referință (<code>compare.py</code>)</h2>
+        <p>Compară un fișier de ieșire cu o foaie de referință și raportează, pe fiecare coloană, eroarea medie/maximă și procentul de valori în toleranță.</p>
+        <pre><code>python compare.py <span class="f">-orig</span> referinta.csv <span class="f">-new</span> rezultate.csv <span class="f">-t</span> <span class="s">0.05</span> <span class="f">-r</span> <span class="s">0.01</span></code></pre>
+        <ul>
+          <li><code>-t</code> — toleranță <strong>absolută</strong> (în unitățile coloanei).</li>
+          <li><code>-r</code>, <code>--rel-tolerance</code> — toleranță <strong>relativă</strong> (ex. <code>0.01</code> = 1%), potrivită pentru coloane de scări foarte diferite (F0 ~80 Hz vs formanți ~3000 Hz). O valoare trece dacă e în toleranța absolută <em>sau</em> relativă.</li>
+          <li><code>Median_Rel_Err</code> — eroarea relativă mediană (indicator de fidelitate a traducerii).</li>
+        </ul>
+      </section>
+
+      <section class="sec" id="exemple">
+        <p class="sec-no">§13</p>
+        <h2>Exemple uzuale</h2>
+        <pre><code><span class="c"># Vițel, folder LFC, cu tot ce e implicit (filtrare F0 activă)</span>
+python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\0000\out_LFC.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC
+
+<span class="c"># Vițel, folder HFC, robust pe laptop</span>
+python moo.py <span class="f">-i</span> .\0000\HFC\ <span class="f">-o</span> .\0000\out_HFC.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--retries</span> <span class="s">50</span>
+
+<span class="c"># Combinarea mai multor foldere într-un singur fișier</span>
+python moo.py <span class="f">-i</span> .\0001\HFC\ <span class="f">-o</span> .\rezultate.csv <span class="f">-a</span> calf <span class="f">-c</span> HFC <span class="f">--isolate</span> <span class="f">--append</span>
+
+<span class="c"># Reproducerea exactă a rezultatelor vechi (fără filtrare)</span>
+python moo.py <span class="f">-i</span> .\0000\LFC\ <span class="f">-o</span> .\out.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC <span class="f">--no-filter</span></code></pre>
+      </section>
+
+      <section class="sec" id="limitari">
+        <p class="sec-no">§14</p>
+        <h2>Note și limitări cunoscute</h2>
+        <ul>
+          <li><strong>Formanții</strong> pot diferi cu sub-Hz față de Praat, fiindcă <code>parselmouth</code> și Praat folosesc implementări interne diferite ale algoritmului Burg/LPC. Nu e o eroare de traducere, ci o diferență de motor.</li>
+          <li><strong>Statisticile F0 pe fișierele marcate manual</strong> nu pot fi reproduse exact: pasul manual de „unvoicing” din Praat este subiectiv, iar coloana <code>Comment</code> din referință e text liber.</li>
+          <li><strong>Blocurile deterministe</strong> (Q25/Q50/Q75, Fpeak, durata, AM rate, entropia Wiener) reproduc referința la ~<code>1e-3</code>.</li>
+          <li>Crash-urile native în etapa de formanți (<code>0xC0000005</code> pe Windows) sunt o problemă a bibliotecii <code>parselmouth</code>/Praat, gestionată prin izolare și reîncercări — nu o problemă de memorie.</li>
+        </ul>
+      </section>
+
+      <section class="sec" id="dev">
+        <p class="sec-no">§15 · referință tehnică</p>
+        <h2>Pentru dezvoltatori</h2>
+        <p>
+          Scriptul este un singur modul, <code>moo.py</code>, fără stare globală: totul se transmite prin
+          argumente, astfel încât aceeași funcție de analiză rulează identic în proces sau într-un subproces izolat.
+        </p>
+
+        <h3>Fluxul de execuție</h3>
+        <div class="flow" aria-label="Fluxul per fișier">
+          <span class="step">Sound</span><span class="arw">→</span>
+          <span class="step">To&nbsp;Pitch&nbsp;(cc)</span><span class="arw">→</span>
+          <span class="step hl">_f0_block · filtrare&nbsp;F0</span><span class="arw">→</span>
+          <span class="step">Energie</span><span class="arw">→</span>
+          <span class="step">Intensitate</span><span class="arw">→</span>
+          <span class="step">Armonicitate</span><span class="arw">→</span>
+          <span class="step">Formanți</span><span class="arw">→</span>
+          <span class="step">Wiener</span><span class="arw">→</span>
+          <span class="step">rând CSV</span>
+        </div>
+        <p>
+          <code>main()</code> parsează argumentele și cheamă <code>process_directory()</code>, care listează
+          fișierele și, pentru fiecare, apelează <code>_analyze_one()</code> — direct, sau (cu <code>--isolate</code>)
+          prin <code>_run_resilient()</code> → <code>_run_isolated()</code> într-un subproces <code>spawn</code>.
+          Rezultatele se agregă într-o listă de dicționare, se mapează coloanele din <code>.tsv</code>
+          (<code>_add_timestamp_columns</code>) și se scrie CSV-ul (plus XLSX-ul regenerat din CSV).
+        </p>
+
+        <h3>Harta funcțiilor</h3>
+        <div class="cards two">
+          <div class="card">
+            <span class="tag">analiză per fișier</span>
+            <h4>Pipeline &amp; metrici</h4>
+            <p><code>analyze_calf</code> / <code>analyze_cow</code> — pipeline-ul complet; fiecare obiect Praat este eliberat imediat ce a fost citit (memorie minimă).</p>
+            <p><code>_f0_block</code> — statistici F0 din pitch-ul netezit; aplică <code>apply_f0_filter</code> pe pitch-ul brut; recalcul din PitchTier-ul filtrat.</p>
+            <p><code>filter_f0_outliers</code>, <code>extract_energy_parameters</code>, și perechile <code>calculate_*_faithful</code> / <code>calculate_*_optimized</code> (modulație, Wiener, dispersie), fiecare cu un dispecer <code>get_*</code>.</p>
+          </div>
+          <div class="card">
+            <span class="tag">infrastructură</span>
+            <h4>Robustețe, I/O, format</h4>
+            <p><code>_run_isolated</code> (subproces + <code>Queue</code>), <code>_run_resilient</code> (scara de reîncercări), <code>_describe_exit</code> (cod ieșire → cauză), <code>_peak_rss_mb</code> (Unix <code>resource</code> + Windows <code>ctypes</code>), <code>_probe_duration</code>.</p>
+            <p><code>praat_format</code> (regulile <code>:N</code>, <code>--undefined--</code>), constantele <code>CALF_PRECISION</code>/<code>COW_PRECISION</code> și <code>CALF_HEADER</code>/<code>COW_HEADER</code>.</p>
+            <p><code>_load_tsv_timestamps</code>, <code>_file_index</code>, <code>_add_timestamp_columns</code> pentru coloanele din <code>.tsv</code>.</p>
+          </div>
+        </div>
+
+        <h3>Cum adaugi o metrică nouă</h3>
+        <ol class="list">
+          <li>Calculeaz-o în <code>analyze_calf</code>/<code>analyze_cow</code> și pune valoarea în dicționarul returnat, cu o cheie clară.</li>
+          <li>Adaugă aceeași cheie în <code>CALF_PRECISION</code>/<code>COW_PRECISION</code> (numărul de zecimale, sau <code>None</code> pentru precizie completă).</li>
+          <li>Adaugă eticheta în constanta de antet <code>CALF_HEADER</code>/<code>COW_HEADER</code>. Cheia din dicționar trebuie să fie egală cu eticheta de antet <em>fără spațiile din față</em> (potrivirea se face pe numele „trimmed”).</li>
+        </ol>
+
+        <h3>Cum adaugi o variantă <code>optimized</code></h3>
+        <p>
+          Urmează tiparul existent: <code>calculate_[metric]_faithful</code> +
+          <code>calculate_[metric]_optimized</code> + un dispecer <code>get_[metric](method, ...)</code>,
+          apoi un argument CLI <code>--[metric]-method</code> transmis prin dicționarul <code>methods</code>.
+        </p>
+
+        <div class="note">
+          <span class="nl">Note tehnice utile</span>
+          <ul style="margin:.3rem 0 0;">
+            <li><strong>Indexare:</strong> cadrele Praat sunt 1-based, vectorii NumPy 0-based — cadrul Praat <code>f</code> ↔ <code>values[f-1]</code>. Vezi comentariile din funcțiile de modulație și Wiener.</li>
+            <li><strong>Subprocese:</strong> contextul este <code>spawn</code> (curat, portabil). Modulul trebuie să rămână importabil fără efecte secundare (păstrează garda <code>if __name__ == "__main__"</code>).</li>
+            <li><strong>Un crash nativ nu poate fi prins</strong> în proces — de aceea izolarea + reîncercările sunt singura cale de recuperare.</li>
+            <li><strong>De ce <code>numpy</code> fixat:</strong> ABI-ul dintre <code>parselmouth</code> și NumPy — un patch de NumPy poate declanșa/opri crash-urile native.</li>
+          </ul>
+        </div>
+
+        <h3>Testare rapidă</h3>
+        <pre><code><span class="c"># verificare de sintaxă</span>
+python -m py_compile moo.py
+
+<span class="c"># rulare + validare față de referință</span>
+python moo.py <span class="f">-i</span> date/LFC <span class="f">-o</span> out.csv <span class="f">-a</span> calf <span class="f">-c</span> LFC <span class="f">--no-filter</span>
+python compare.py <span class="f">-orig</span> referinta.csv <span class="f">-new</span> out.csv <span class="f">-t</span> <span class="s">0.05</span> <span class="f">-r</span> <span class="s">0.01</span></code></pre>
+      </section>
+
+      <footer class="foot">
+        moo.py · analiză acustică a vocalizărilor bovine · reimplementare Python a fluxului Praat (MPT Ello)
+      </footer>
+    </main>
+  </div>
+</div>
+
+<script>
+(function(){
+  var cv = document.getElementById('f0canvas');
+  if(!cv) return;
+  var probe = document.querySelector('.doc');
+  function css(name, fallback){
+    var v = getComputedStyle(probe).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+  // A stylised F0 contour (Hz-like) with one anomalous octave-jump run.
+  // index -> {hz, anom}
+  var pts = [];
+  var N = 62;
+  for(var i=0;i<N;i++){
+    var base = 92 + 7*Math.sin(i/6.1) + 3*Math.sin(i/2.3);
+    var hz = base, anom = false;
+    if(i>=30 && i<=37){ hz = base + 34 + (i-30)*1.2; anom = true; } // octave jump
+    pts.push({hz:hz, anom:anom});
+  }
+  function draw(){
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.clientWidth || 1040, H = cv.clientHeight || 130;
+    cv.width = W*dpr; cv.height = H*dpr;
+    var ctx = cv.getContext('2d');
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,W,H);
+    var teal = css('--accent','#0F6E79');
+    var mag  = css('--spike','#C82E74');
+    var faint= css('--ink-faint','#77837F');
+    var padX = 26, padTop = 16, padBot = 20;
+    var minHz = 78, maxHz = 138;
+    function X(i){ return padX + (W-2*padX)*(i/(N-1)); }
+    function Y(hz){ return padTop + (H-padTop-padBot)*(1-(hz-minHz)/(maxHz-minHz)); }
+
+    // baseline (rolling median of the non-anomalous contour) — dashed
+    ctx.save();
+    ctx.setLineDash([4,5]); ctx.lineWidth = 1.2; ctx.strokeStyle = faint;
+    ctx.globalAlpha = .55; ctx.beginPath();
+    for(var i=0;i<N;i++){
+      var b = 92 + 7*Math.sin(i/6.1) + 3*Math.sin(i/2.3);
+      var x=X(i), y=Y(b);
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke(); ctx.restore();
+
+    // connecting line
+    ctx.lineWidth = 1.6; ctx.strokeStyle = teal; ctx.globalAlpha = .5;
+    ctx.beginPath();
+    for(var i=0;i<N;i++){ var x=X(i), y=Y(pts[i].hz); if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y);}
+    ctx.stroke(); ctx.globalAlpha = 1;
+
+    // dots (pitch candidates) — teal, or magenta for the anomalous run
+    for(var i=0;i<N;i++){
+      var x=X(i), y=Y(pts[i].hz);
+      ctx.beginPath(); ctx.arc(x,y,3.1,0,6.2832);
+      ctx.fillStyle = pts[i].anom ? mag : teal; ctx.fill();
+    }
+  }
+  draw();
+  var ro; try{ ro = new ResizeObserver(draw); ro.observe(cv); }catch(e){ window.addEventListener('resize', draw); }
+  try{
+    matchMedia('(prefers-color-scheme:dark)').addEventListener('change', draw);
+    new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+  }catch(e){}
+})();
+</script>
+</body>
+</html>
