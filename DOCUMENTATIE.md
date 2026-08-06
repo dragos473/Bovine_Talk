@@ -4,24 +4,22 @@ Analiză acustică a vocalizărilor bovine (viței și vaci), reimplementare în
 Python/`parselmouth` a fluxului manual din Praat descris de macro-urile
 `Script calves MPT Ello` și `Script cows MPT Ello.txt`.
 
-> **Unealtă internă de cercetare, nu un produs.** Scriptul este folosit intern
-> pentru analiza vocalizărilor și nu este destinat distribuirii ca produs.
-
 ---
 
 ## 1. Scop
 
-Aplicația este folosită de cercetători din domeniul veterinar și al acusticii
-pentru a analiza comportamentul animalelor pe baza înregistrărilor audio.
-Scriptul parcurge automat un director cu fișiere audio, calculează un set de
-parametri acustici pentru fiecare vocalizare și exportă rezultatele într-un
-tabel (`.csv` și, opțional, `.xlsx`).
+Scriptul analizează acustic vocalizările bovine (viței și vaci) și înlocuiește un
+flux de lucru care înainte se făcea manual în Praat. Parcurge un director cu
+înregistrări, calculează parametrii acustici pentru fiecare vocalizare și scrie
+rezultatele într-un `.csv` (și, dacă e instalat `openpyxl`, un `.xlsx`).
 
-Față de fluxul manual din Praat, scriptul adaugă un pas **automat** de curățare
-a conturului de frecvență fundamentală (F0): detectează și elimină „săriturile”
-de urmărire (anomalii armonice / de octavă) — pasul pe care cercetătorul îl
-făcea manual în editorul de pitch din Praat („inspectează sunetul și scoate
-segmentele greșite”).
+Partea grea, care înainte se făcea de mână, era curățarea conturului de frecvență
+fundamentală (F0). În editorul de pitch din Praat, cineva trebuia să se uite la
+fiecare vocalizare și să scoată „săriturile” de urmărire — momentele în care
+algoritmul sare brusc la o octavă sau la o armonică și strică statisticile.
+Scriptul face asta automat (vezi §7). Manual, pasul dura mult și creștea odată cu
+numărul de vocalizări; automatizat, timpul total de extragere plus analiză a
+scăzut la aproximativ jumătate.
 
 ---
 
@@ -51,25 +49,27 @@ valorile de referință la nivel de rotunjire.
 
 ## 3. Cerințe și instalare
 
-- Python 3.10+ (testat pe 3.12)
-- Pachete: vezi `requirements.txt`
+Scriptul e folosit pe Windows, cu Python instalat global și `pip`, rulat din
+consola integrată din VS Code. Ar trebui să meargă la fel pe Linux/macOS — o
+rulare pe Linux din consola nativă, cu un `venv`, e planificată dar încă
+netestată.
 
-Instalare:
+Ai nevoie de Python 3.10 sau mai nou (folosit pe 3.12) și de pachetele din
+`requirements.txt`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-sau manual:
+sau, manual:
 
 ```bash
 pip install praat-parselmouth "numpy>=2.4.4" pandas openpyxl
 ```
 
-> **Important (stabilitate):** `numpy` este fixat la `>=2.4.4`. Pe `numpy 2.4.2`
-> s-au observat blocări native (crash) în motorul `parselmouth` pe Windows care
-> nu apăreau pe `2.4.4`. `openpyxl` este opțional — este necesar doar pentru
-> exportul `.xlsx` (fișierul `.csv` se scrie oricum).
+`numpy` e fixat la `>=2.4.4` dintr-un motiv concret: pe `2.4.2`, `parselmouth`
+dădea crash-uri native pe Windows care dispăreau pe `2.4.4`. `openpyxl` e
+opțional — trebuie doar pentru exportul `.xlsx`; CSV-ul se scrie și fără el.
 
 ---
 
@@ -339,70 +339,61 @@ python bovine_acoustics.py -i ... -o ... -a calf --isolate --skip-formants
 
 ## 12. Validare față de referință
 
-### Rezultatele testării pe plaja de referință
+Am comparat ieșirea scriptului cu foi de calcul făcute de mână, folosind
+`compare.py` (descris la final). Referințele acoperă 1223 de vocalizări din 58 de
+înregistrări (în jur de 29 de ore de audio), grupate în 30 de sesiuni. Un lucru
+de ținut minte când citești cifrele: fiecare set de referință a fost făcut de
+altă persoană, iar pasul manual din Praat — mai ales unvoicing-ul — presupune
+decizii subiective. Deci o parte din diferențe vine din cum a lucrat fiecare
+adnotator, nu doar din script. Nu putem separa complet cele două, dar structura
+erorilor de mai jos arată destul de clar unde se întâmplă.
 
-Scriptul a fost testat pe vocalizările extrase din **58 de înregistrări `.wav`
-(aproximativ 29 de ore de audio)**. Ieșirea a fost comparată cu **CSV-uri de
-referință create manual**, fiecare set de o **persoană diferită**.
-
-Din acest motiv, discrepanțele reflectă în bună măsură **variația umană dintre
-adnotatori**, nu neajunsuri ale scriptului — dovadă și numeroasele sesiuni în
-care practic toate celulele coincid cu referința (16 din 30 de sesiuni au peste
-98%). În proiectul nostru, o acuratețe **peste 90%** este considerată un succes.
-
-Cifre agregate pe cele 3 seturi combinate:
-
-| Indicator | Valoare |
-|---|---|
-| Vocalizări evaluate | **1223** |
-| Sesiuni | 30 |
-| Celule numerice comparate | 35.371 |
-| **Acuratețe combinată** (celule cu eroare relativă ≤ 0.05) | **95.1%** |
-| Eroare relativă medie | 5.4% |
-| Sesiuni ≥ 90% (succes) | 25 / 30 |
-| Sesiuni ≥ 98% | 16 / 30 |
+Pe ansamblu, 95% din cele ~35.000 de valori numerice cad în ±5% față de referință
+(pragul pe care îl folosim ca „potrivire”; în proiect, peste 90% pe o sesiune e
+considerat succes). 25 din 30 de sesiuni trec de 90%, iar 16 sunt peste 98%.
 
 ![Acuratețea pe sesiune](docs/img/accuracy_per_session.png)
 
-Majoritatea sesiunilor sunt peste pragul de 90%; cele câteva sub prag provin din
-seturile de referință cu cea mai mare variație umană.
+Sesiunile nu sunt uniforme — cele mai multe stau sus, câteva pică. Cele care pică
+sunt aceleași seturi de referință în care și diferențele pe F0 sunt cele mai mari
+(vezi mai jos), adică exact acolo unde adnotatorii au avut cel mai mult loc de
+interpretare.
 
-### Ce câmpuri sunt mai sensibile
+Diferențele nu sunt împrăștiate uniform peste parametri, ci strânse într-un
+singur grup:
 
 ![Eroarea relativă medie pe parametru](docs/img/rel_error_per_metric.png)
 
-Discrepanțele se concentrează într-un grup restrâns de parametri, toți din zona
-**F0 / modulație**:
+Parametrii calculați direct din semnal — quartilele spectrale (Q25/Q50/Q75),
+Fpeak, durata, amplitudinea (AM), armonicitatea — și formanții (F1–F6, dispersie,
+VTL) coincid cu referința sub ~1% eroare relativă. Aceștia nu depind de conturul
+de pitch, deci nici de deciziile de unvoicing.
 
-- **FM Extent** are cea mai mare eroare relativă, dar cifra este înșelătoare:
-  fiind un **raport** (variația totală împărțită la numărul de cicluri de
-  modulație), valoarea poate fi foarte mică, iar o diferență absolută minusculă
-  produce o eroare relativă mare. În valoare absolută, diferența rămâne mică.
-- **Time max F0, F0 var, FM Rate, Range F0, F0 Abs Slope** depind de pasul manual
-  de „unvoicing” (subiectiv) și de mici diferențe în numărarea inflexiunilor.
-- **mean wiener entropy** apare ridicat doar din cauza câtorva sesiuni-outlier;
-  fiind o valoare adesea apropiată de 0, eroarea relativă se amplifică artificial.
+Aproape toată diferența vine din parametrii de F0 și modulație: FM Extent, Time
+max F0, F0 var, FM Rate, Range F0, panta absolută. Toți se calculează din conturul
+de pitch și din ce cadre sunt scoase — adică fix partea subiectivă a procesului
+manual. Unde adnotatorii au ales diferit, aici se vede.
 
-Parametrii **deterministici și spectrali** (Q25/Q50/Q75, Fpeak, durata, AM,
-armonicitate) și **formanții** (F1–F6, dispersie, VTL) au eroare relativă sub
-~1% — practic identici cu referința.
+Două cifre din grafic trebuie citite cu grijă, ca să nu ducă în eroare. FM Extent
+iese cel mai sus pentru că e un raport cu numitor mic (variația totală împărțită
+la numărul de cicluri de modulație): o diferență mică în valoare absolută devine
+mare în procente. Iar `mean wiener entropy` urcă doar în câteva sesiuni, unde
+valoarea e aproape de zero și orice diferență mică se amplifică relativ.
 
-### Instrumentul de comparare (`compare.py`)
+### `compare.py`
 
-`compare.py` compară un fișier de ieșire cu o foaie de referință și raportează,
-pe fiecare coloană, eroarea medie/maximă și procentul de valori în toleranță.
+`compare.py` compară un fișier de ieșire cu o foaie de referință și raportează, pe
+fiecare coloană, eroarea medie/maximă și procentul de valori în toleranță.
 
 ```bash
 python compare.py -orig referinta.csv -new rezultate.csv -t 0.05 -r 0.01
 ```
 
-- `-t` — toleranță **absolută** (în unitățile coloanei).
-- `-r`, `--rel-tolerance` — toleranță **relativă** (ex. `-r 0.01` = în 1%),
-  potrivită pentru un tabel cu coloane de scări foarte diferite (F0 ~80 Hz vs
-  formanți ~3000 Hz). O valoare trece dacă e în toleranța absolută **sau**
-  relativă.
-- Coloana `Median_Rel_Err` arată eroarea relativă mediană (indicator de
-  fidelitate a traducerii).
+- `-t` — toleranță absolută (în unitățile coloanei).
+- `-r`, `--rel-tolerance` — toleranță relativă (ex. `0.01` = 1%). E utilă fiindcă
+  tabelul are coloane de scări foarte diferite (F0 ~80 Hz vs formanți ~3000 Hz); o
+  valoare trece dacă e în toleranța absolută sau în cea relativă.
+- `Median_Rel_Err` — eroarea relativă mediană pe coloană.
 
 ---
 
