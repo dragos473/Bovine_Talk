@@ -1,0 +1,12 @@
+# Known-good environment for moo.py (bovine vocalization analysis).
+#
+# parselmouth is a compiled C++ extension that exchanges array buffers with
+# numpy across the C-API boundary. A numpy 2.4.2 laptop segfaulted
+# (0xC0000005 ACCESS_VIOLATION) inside the engine where a numpy 2.4.4 machine
+# ran cleanly, so numpy is pinned to the known-good patch release. Bump these
+# deliberately, together, after testing -- not incidentally.
+
+praat-parselmouth==0.4.7
+numpy>=2.4.4
+pandas>=2.0
+openpyxl>=3.1        # optional: enables the .xlsx sidecar output
